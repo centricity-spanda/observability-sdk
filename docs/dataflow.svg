@@ -1,0 +1,91 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 1050">
+  <rect width="800" height="1050" fill="#f8f9fa" />
+  
+  <style>
+    .step-box { fill: #ffffff; stroke: #333; stroke-width: 2; rx: 8; }
+    .title { font-family: 'Segoe UI', sans-serif; font-weight: bold; font-size: 18px; fill: #2d3436; }
+    .sub-title { font-family: 'Segoe UI', sans-serif; font-weight: bold; font-size: 14px; fill: #636e72; }
+    .code-text { font-family: 'Consolas', monospace; font-size: 12px; fill: #2d3436; }
+    .label { font-family: 'Segoe UI', sans-serif; font-size: 13px; fill: #2d3436; }
+    .arrow { fill: none; stroke: #636e72; stroke-width: 2; marker-end: url(#arrowhead); }
+    .highlight-blue { fill: #e1f5fe; stroke: #01579b; }
+    .highlight-green { fill: #e8f5e9; stroke: #1b5e20; }
+    .highlight-purple { fill: #f3e5f5; stroke: #4a148c; }
+    .highlight-orange { fill: #fff3e0; stroke: #e65100; }
+  </style>
+
+  <defs>
+    <marker id="arrowhead" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+      <polygon points="0 0, 10 3.5, 0 7" fill="#636e72" />
+    </marker>
+  </defs>
+
+  <rect x="50" y="20" width="700" height="150" class="step-box" />
+  <text x="70" y="45" class="title">Step 1: Application Instrumentation</text>
+  <rect x="200" y="60" width="400" height="90" rx="4" fill="#f1f2f6" stroke="#ced4da" />
+  <text x="215" y="80" class="code-text" fill="#d63031">logger.Info("payment processed", zap.String("id", "PAY123"))</text>
+  <text x="215" y="100" class="code-text" fill="#0984e3">metrics.httpRequests.Inc()</text>
+  <text x="215" y="120" class="code-text" fill="#6c5ce7">ctx, span := tracer.Start(ctx, "op")</text>
+  <text x="215" y="140" class="code-text" fill="#6c5ce7">defer span.End()</text>
+
+  <line x1="400" y1="170" x2="400" y2="200" class="arrow" />
+  <rect x="50" y="200" width="700" height="160" class="step-box" />
+  <text x="70" y="225" class="title">Step 2: Telemetry Export to Kafka</text>
+  <rect x="150" y="240" width="500" height="100" rx="5" class="highlight-blue" fill-opacity="0.3" />
+  <text x="170" y="265" class="label">• Zap → KafkaWriter → <tspan font-weight="bold">logs.application</tspan></text>
+  <text x="170" y="285" class="label">• Prometheus → Kafka Pusher → <tspan font-weight="bold">metrics.*</tspan></text>
+  <text x="170" y="305" class="label">• OTel → Kafka Exporter → <tspan font-weight="bold">traces.application</tspan></text>
+  <text x="170" y="325" class="label" font-style="italic" fill="#555">Config: Batching 100ms | Snappy Compression | Async Retries</text>
+
+  <line x1="400" y1="360" x2="400" y2="390" class="arrow" />
+  <rect x="50" y="390" width="700" height="130" class="step-box" fill="#fff9db" />
+  <text x="70" y="415" class="title">Step 3: Kafka Buffering (Durable Layer)</text>
+  <text x="100" y="445" class="label">Replication: 3 | Min ISR: 2</text>
+  <text x="100" y="465" class="label">Retention: 7 days (standard) / 30 days (audit)</text>
+  <text x="450" y="445" class="label" fill="#2f3542">✓ Zero data loss</text>
+  <text x="450" y="465" class="label" fill="#2f3542">✓ Backpressure handling</text>
+  <text x="450" y="485" class="label" fill="#2f3542">✓ Decoupled scaling</text>
+
+  <line x1="400" y1="520" x2="400" y2="550" class="arrow" />
+  <rect x="50" y="550" width="700" height="180" class="step-box" />
+  <text x="70" y="575" class="title">Step 4: Processing &amp; Enrichment</text>
+  
+  <rect x="100" y="590" width="280" height="120" rx="4" class="highlight-green" fill-opacity="0.2" />
+  <text x="115" y="610" class="sub-title">Vector Aggregator (Logs)</text>
+  <text x="115" y="635" class="label">• Parse JSON &amp; PII Masking</text>
+  <text x="115" y="655" class="label">• Geo-IP Enrichment</text>
+  <text x="115" y="675" class="label">• Routing to S3/ES</text>
+
+  <rect x="420" y="590" width="280" height="120" rx="4" class="highlight-purple" fill-opacity="0.2" />
+  <text x="435" y="610" class="sub-title">OTel Gateway (Metrics/Traces)</text>
+  <text x="435" y="635" class="label">• Tail-based Sampling</text>
+  <text x="435" y="655" class="label">• Metric Aggregation</text>
+  <text x="435" y="675" class="label">• Format Conversion</text>
+
+  <line x1="240" y1="730" x2="240" y2="760" class="arrow" />
+  <line x1="560" y1="730" x2="560" y2="760" class="arrow" />
+  
+  <rect x="50" y="760" width="700" height="250" class="step-box" />
+  <text x="70" y="785" class="title">Step 5: Storage &amp; Visualization</text>
+  
+  <rect x="80" y="805" width="130" height="80" rx="4" class="highlight-green" />
+  <text x="90" y="830" class="sub-title">ES / Loki</text>
+  <text x="90" y="855" class="label">Logs (30d)</text>
+  
+  <rect x="230" y="805" width="130" height="80" rx="4" class="highlight-blue" />
+  <text x="240" y="830" class="sub-title">Prometheus</text>
+  <text x="240" y="855" class="label">Metrics (90d)</text>
+  
+  <rect x="380" y="805" width="130" height="80" rx="4" class="highlight-purple" />
+  <text x="390" y="830" class="sub-title">Tempo</text>
+  <text x="390" y="855" class="label">Traces</text>
+  
+  <rect x="530" y="805" width="130" height="80" rx="4" class="highlight-orange" />
+  <text x="540" y="830" class="sub-title">S3</text>
+  <text x="540" y="855" class="label">Archive (7y)</text>
+
+  <line x1="400" y1="885" x2="400" y2="915" class="arrow" />
+  <rect x="250" y="915" width="300" height="80" rx="20" fill="#f39c12" />
+  <text x="400" y="945" text-anchor="middle" font-family="Segoe UI" font-weight="bold" font-size="20" fill="white">Grafana</text>
+  <text x="400" y="970" text-anchor="middle" font-family="Segoe UI" font-size="12" fill="white">Dashboards • Alerts • Correlation</text>
+</svg>

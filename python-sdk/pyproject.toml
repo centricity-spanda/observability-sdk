@@ -1,0 +1,31 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "centricity-observability"
+version = "0.1.0"
+description = "Platform Observability SDK for Python services"
+readme = "README.md"
+requires-python = ">=3.9"
+license = "MIT"
+authors = [
+    { name = "Platform Team", email = "platform@centricity.com" }
+]
+
+dependencies = [
+    "structlog>=23.2.0",
+    "prometheus-client>=0.19.0",
+    "opentelemetry-api>=1.21.0",
+    "opentelemetry-sdk>=1.21.0",
+    "kafka-python>=2.0.2",
+    "orjson>=3.9.0",
+]
+
+[project.optional-dependencies]
+fastapi = ["fastapi>=0.104.0", "starlette>=0.32.0"]
+flask = ["flask>=3.0.0"]
+dev = ["pytest>=7.4.0", "pytest-cov>=4.1.0", "pytest-asyncio>=0.21.0"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["observability"]

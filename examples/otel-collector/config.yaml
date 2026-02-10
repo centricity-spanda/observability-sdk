@@ -1,0 +1,121 @@
+# OpenTelemetry Collector Configuration
+# Consumes traces and metrics from Kafka and exports to Elasticsearch
+
+receivers:
+  # Kafka receiver for traces
+  kafka/traces:
+    brokers:
+      - kafka:29092
+    topic: traces.application
+    group_id: otel-traces
+    encoding: raw
+    initial_offset: earliest
+
+  # Kafka receiver for metrics
+  kafka/metrics:
+    brokers:
+      - kafka:29092
+    topic: metrics.application
+    group_id: otel-metrics
+    encoding: raw
+    initial_offset: earliest
+
+  # OTLP receiver for direct ingestion (optional)
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  # Batch processor for efficiency
+  batch:
+    timeout: 5s
+    send_batch_size: 1000
+    send_batch_max_size: 2000
+
+  # Memory limiter to prevent OOM
+  memory_limiter:
+    check_interval: 1s
+    limit_mib: 256
+    spike_limit_mib: 64
+
+  # Resource processor to add metadata
+  resource:
+    attributes:
+      - key: collector.name
+        value: otel-collector
+        action: insert
+      - key: pipeline
+        value: otel
+        action: insert
+
+exporters:
+  # Elasticsearch exporter for traces
+  elasticsearch/traces:
+    endpoints:
+      - http://elasticsearch:9200
+    traces_index: traces
+    sending_queue:
+      enabled: true
+      num_consumers: 10
+    retry:
+      enabled: true
+      initial_interval: 1s
+      max_interval: 30s
+
+  # Elasticsearch exporter for metrics
+  elasticsearch/metrics:
+    endpoints:
+      - http://elasticsearch:9200
+    metrics_index: metrics
+    sending_queue:
+      enabled: true
+      num_consumers: 10
+    retry:
+      enabled: true
+
+  # Debug exporter (remove in production)
+  debug:
+    verbosity: basic
+    sampling_initial: 5
+    sampling_thereafter: 200
+
+  # Prometheus exporter for self-monitoring
+  prometheus:
+    endpoint: 0.0.0.0:8888
+    namespace: otel
+
+extensions:
+  # Health check
+  health_check:
+    endpoint: 0.0.0.0:13133
+
+  # Performance profiler
+  pprof:
+    endpoint: 0.0.0.0:1777
+
+  # zPages for debugging
+  zpages:
+    endpoint: 0.0.0.0:55679
+
+service:
+  extensions: [health_check, pprof, zpages]
+  
+  pipelines:
+    traces:
+      receivers: [kafka/traces, otlp]
+      processors: [memory_limiter, batch, resource]
+      exporters: [elasticsearch/traces, debug]
+    
+    metrics:
+      receivers: [kafka/metrics, otlp]
+      processors: [memory_limiter, batch, resource]
+      exporters: [elasticsearch/metrics, debug, prometheus]
+
+  telemetry:
+    logs:
+      level: info
+    metrics:
+      address: 0.0.0.0:8888
