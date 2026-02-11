@@ -1,7 +1,6 @@
 package metrics
 
 import (
-	"bytes"
 	"context"
 	"os"
 	"strings"
@@ -10,7 +9,12 @@ import (
 
 	"github.com/IBM/sarama"
 	"github.com/prometheus/client_golang/prometheus"
-	"github.com/prometheus/common/expfmt"
+	dto "github.com/prometheus/client_model/go"
+	"go.opentelemetry.io/proto/otlp/collector/metrics/v1"
+	commonpb "go.opentelemetry.io/proto/otlp/common/v1"
+	metricspb "go.opentelemetry.io/proto/otlp/metrics/v1"
+	resourcepb "go.opentelemetry.io/proto/otlp/resource/v1"
+	"google.golang.org/protobuf/proto"
 )
 
 // Pusher pushes metrics to Kafka periodically
@@ -114,27 +118,31 @@ func (p *Pusher) pushLoop(ctx context.Context) {
 }
 
 func (p *Pusher) push() {
-	// Gather metrics
+	// Gather metrics from Prometheus registry
 	mfs, err := p.registry.Gather()
 	if err != nil {
 		os.Stderr.WriteString("Failed to gather metrics: " + err.Error() + "\n")
 		return
 	}
 
-	// Encode to Prometheus text format
-	var buf bytes.Buffer
-	for _, mf := range mfs {
-		if _, err := expfmt.MetricFamilyToText(&buf, mf); err != nil {
-			os.Stderr.WriteString("Failed to encode metrics: " + err.Error() + "\n")
-			continue
-		}
+	// Convert to OTLP format
+	otlpMetrics := p.convertToOTLP(mfs)
+	if otlpMetrics == nil {
+		return
+	}
+
+	// Marshal to protobuf
+	data, err := proto.Marshal(otlpMetrics)
+	if err != nil {
+		os.Stderr.WriteString("Failed to marshal OTLP metrics: " + err.Error() + "\n")
+		return
 	}
 
 	// Send to Kafka
 	msg := &sarama.ProducerMessage{
 		Topic:     p.topic,
 		Key:       sarama.StringEncoder(p.serviceName),
-		Value:     sarama.ByteEncoder(buf.Bytes()),
+		Value:     sarama.ByteEncoder(data),
 		Timestamp: time.Now(),
 	}
 
@@ -143,6 +151,144 @@ func (p *Pusher) push() {
 		KafkaProducerMessagesTotal.WithLabelValues(p.serviceName, p.topic, "error").Inc()
 	} else {
 		KafkaProducerMessagesTotal.WithLabelValues(p.serviceName, p.topic, "success").Inc()
+	}
+}
+
+// convertToOTLP converts Prometheus metrics to OTLP format
+func (p *Pusher) convertToOTLP(mfs []*dto.MetricFamily) *v1.ExportMetricsServiceRequest {
+	now := time.Now()
+	timeNanos := uint64(now.UnixNano())
+
+	var metrics []*metricspb.Metric
+
+	for _, mf := range mfs {
+		for _, m := range mf.GetMetric() {
+			metric := &metricspb.Metric{
+				Name:        mf.GetName(),
+				Description: mf.GetHelp(),
+			}
+
+			// Convert labels to attributes
+			var attributes []*commonpb.KeyValue
+			for _, label := range m.GetLabel() {
+				attributes = append(attributes, &commonpb.KeyValue{
+					Key: label.GetName(),
+					Value: &commonpb.AnyValue{
+						Value: &commonpb.AnyValue_StringValue{
+							StringValue: label.GetValue(),
+						},
+					},
+				})
+			}
+
+			// Convert based on metric type
+			switch mf.GetType() {
+			case dto.MetricType_COUNTER:
+				metric.Data = &metricspb.Metric_Sum{
+					Sum: &metricspb.Sum{
+						AggregationTemporality: metricspb.AggregationTemporality_AGGREGATION_TEMPORALITY_CUMULATIVE,
+						IsMonotonic:            true,
+						DataPoints: []*metricspb.NumberDataPoint{
+							{
+								Attributes:        attributes,
+								TimeUnixNano:      timeNanos,
+								Value:             &metricspb.NumberDataPoint_AsDouble{AsDouble: m.GetCounter().GetValue()},
+							},
+						},
+					},
+				}
+
+			case dto.MetricType_GAUGE:
+				metric.Data = &metricspb.Metric_Gauge{
+					Gauge: &metricspb.Gauge{
+						DataPoints: []*metricspb.NumberDataPoint{
+							{
+								Attributes:   attributes,
+								TimeUnixNano: timeNanos,
+								Value:        &metricspb.NumberDataPoint_AsDouble{AsDouble: m.GetGauge().GetValue()},
+							},
+						},
+					},
+				}
+
+			case dto.MetricType_HISTOGRAM:
+				hist := m.GetHistogram()
+				var bucketCounts []uint64
+				var explicitBounds []float64
+
+				for _, bucket := range hist.GetBucket() {
+					bucketCounts = append(bucketCounts, bucket.GetCumulativeCount())
+					explicitBounds = append(explicitBounds, bucket.GetUpperBound())
+				}
+
+				metric.Data = &metricspb.Metric_Histogram{
+					Histogram: &metricspb.Histogram{
+						AggregationTemporality: metricspb.AggregationTemporality_AGGREGATION_TEMPORALITY_CUMULATIVE,
+						DataPoints: []*metricspb.HistogramDataPoint{
+							{
+								Attributes:     attributes,
+								TimeUnixNano:   timeNanos,
+								Count:          hist.GetSampleCount(),
+								Sum:            func() *float64 { v := hist.GetSampleSum(); return &v }(),
+								BucketCounts:   bucketCounts,
+								ExplicitBounds: explicitBounds,
+							},
+						},
+					},
+				}
+
+			case dto.MetricType_SUMMARY:
+				summary := m.GetSummary()
+				var quantiles []*metricspb.SummaryDataPoint_ValueAtQuantile
+
+				for _, q := range summary.GetQuantile() {
+					quantiles = append(quantiles, &metricspb.SummaryDataPoint_ValueAtQuantile{
+						Quantile: q.GetQuantile(),
+						Value:    q.GetValue(),
+					})
+				}
+
+				metric.Data = &metricspb.Metric_Summary{
+					Summary: &metricspb.Summary{
+						DataPoints: []*metricspb.SummaryDataPoint{
+							{
+								Attributes:     attributes,
+								TimeUnixNano:   timeNanos,
+								Count:          summary.GetSampleCount(),
+								Sum:            summary.GetSampleSum(),
+								QuantileValues: quantiles,
+							},
+						},
+					},
+				}
+			}
+
+			metrics = append(metrics, metric)
+		}
+	}
+
+	return &v1.ExportMetricsServiceRequest{
+		ResourceMetrics: []*metricspb.ResourceMetrics{
+			{
+				Resource: &resourcepb.Resource{
+					Attributes: []*commonpb.KeyValue{
+						{
+							Key: "service.name",
+							Value: &commonpb.AnyValue{
+								Value: &commonpb.AnyValue_StringValue{
+									StringValue: p.serviceName,
+								},
+							},
+						},
+					},
+				},
+				ScopeMetrics: []*metricspb.ScopeMetrics{
+					{
+						Metrics: metrics,
+					},
+				},
+			},
+		},
 	}
 }
 

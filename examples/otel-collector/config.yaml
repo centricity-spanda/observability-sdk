@@ -65,6 +65,13 @@ exporters:
       initial_interval: 1s
       max_interval: 30s
 
+  # Jaeger exporter for trace visualization
+  # Jaeger exporter via OTLP
+  otlp/jaeger:
+    endpoint: jaeger:4317
+    tls:
+      insecure: true
+
   # Debug exporter (remove in production)
   debug:
     verbosity: basic
@@ -74,6 +81,7 @@ exporters:
   # Prometheus exporter for self-monitoring
   prometheus:
     endpoint: 0.0.0.0:9090 # ← Changed from 8888 to avoid conflict
+
 
 extensions:
   # Health check
@@ -95,12 +103,13 @@ service:
     traces:
       receivers: [kafka/traces, otlp]
       processors: [memory_limiter, batch, resource]
-      exporters: [elasticsearch/traces, debug]
+      exporters: [elasticsearch/traces, otlp/jaeger, debug]
 
     metrics:
       receivers: [kafka/metrics, otlp]
       processors: [memory_limiter, batch, resource]
       exporters: [debug, prometheus]
+
 
   telemetry:
     logs:

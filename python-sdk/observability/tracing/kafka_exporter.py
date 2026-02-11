@@ -6,15 +6,25 @@ import threading
 from queue import Queue, Full
 from typing import Optional, Sequence
 
-import orjson
 from kafka import KafkaProducer
 from kafka.errors import KafkaError
 from opentelemetry.sdk.trace import ReadableSpan
 from opentelemetry.sdk.trace.export import SpanExporter, SpanExportResult
+from opentelemetry.proto.collector.trace.v1.trace_service_pb2 import (
+    ExportTraceServiceRequest,
+)
+from opentelemetry.proto.common.v1.common_pb2 import AnyValue, KeyValue
+from opentelemetry.proto.trace.v1.trace_pb2 import (
+    ResourceSpans,
+    ScopeSpans,
+    Span,
+    Status,
+)
+from opentelemetry.proto.resource.v1.resource_pb2 import Resource
 
 
 class KafkaSpanExporter(SpanExporter):
-    """Exports OpenTelemetry spans to Kafka."""
+    """Exports OpenTelemetry spans to Kafka in OTLP protobuf format."""
     
     def __init__(
         self,
@@ -58,23 +68,34 @@ class KafkaSpanExporter(SpanExporter):
                 if span_data and self._producer:
                     self._producer.send(
                         self.topic,
-                        key=span_data.get("trace_id", "").encode(),
-                        value=orjson.dumps(span_data),
+                        key=span_data["key"],
+                        value=span_data["value"],
                     )
             except Exception:
                 pass
     
     def export(self, spans: Sequence[ReadableSpan]) -> SpanExportResult:
-        """Export spans to Kafka."""
+        """Export spans to Kafka in OTLP protobuf format."""
         if self._closed or not self._producer:
             return SpanExportResult.FAILURE
         
-        for span in spans:
-            span_data = self._span_to_dict(span)
-            try:
-                self._queue.put_nowait(span_data)
-            except Full:
-                pass  # Drop if queue full
+        # Convert to OTLP and serialize
+        otlp_request = self._convert_to_otlp(spans)
+        protobuf_data = otlp_request.SerializeToString()
+        
+        # Use first span's trace ID as key
+        key = b""
+        if spans:
+            ctx = spans[0].get_span_context()
+            key = format(ctx.trace_id, "032x").encode()
+        
+        try:
+            self._queue.put_nowait({
+                "key": key,
+                "value": protobuf_data,
+            })
+        except Full:
+            pass  # Drop if queue full
         
         return SpanExportResult.SUCCESS
     
@@ -92,42 +113,96 @@ class KafkaSpanExporter(SpanExporter):
             self._producer.flush(timeout=timeout_millis / 1000)
         return True
     
-    def _span_to_dict(self, span: ReadableSpan) -> dict:
-        """Convert span to dictionary for JSON serialization."""
-        ctx = span.get_span_context()
-        parent = span.parent
+    def _convert_to_otlp(self, spans: Sequence[ReadableSpan]) -> ExportTraceServiceRequest:
+        """Convert spans to OTLP format."""
+        otlp_spans = []
         
-        # Convert attributes
-        attrs = {}
-        if span.attributes:
-            for key, value in span.attributes.items():
-                attrs[key] = value
+        for span in spans:
+            ctx = span.get_span_context()
+            parent = span.parent
+            
+            # Convert attributes
+            attributes = []
+            if span.attributes:
+                for key, value in span.attributes.items():
+                    attributes.append(
+                        KeyValue(
+                            key=key,
+                            value=self._value_to_otlp(value)
+                        )
+                    )
+            
+            # Convert events
+            events = []
+            if span.events:
+                for event in span.events:
+                    event_attrs = []
+                    if event.attributes:
+                        for key, value in event.attributes.items():
+                            event_attrs.append(
+                                KeyValue(
+                                    key=key,
+                                    value=self._value_to_otlp(value)
+                                )
+                            )
+                    events.append(
+                        Span.Event(
+                            time_unix_nano=event.timestamp,
+                            name=event.name,
+                            attributes=event_attrs,
+                        )
+                    )
+            
+            # Convert status
+            status = Status(
+                code=Status.StatusCode(span.status.status_code.value),
+                message=span.status.description or "",
+            )
+            
+            # Create OTLP span
+            otlp_span = Span(
+                trace_id=ctx.trace_id.to_bytes(16, "big"),
+                span_id=ctx.span_id.to_bytes(8, "big"),
+                parent_span_id=parent.span_id.to_bytes(8, "big") if parent else b"",
+                name=span.name,
+                kind=Span.SpanKind(span.kind.value + 1),  # OTLP enum starts at 1
+                start_time_unix_nano=span.start_time,
+                end_time_unix_nano=span.end_time or 0,
+                attributes=attributes,
+                events=events,
+                status=status,
+            )
+            
+            otlp_spans.append(otlp_span)
         
-        # Convert events
-        events = []
-        if span.events:
-            for event in span.events:
-                event_attrs = {}
-                if event.attributes:
-                    for key, value in event.attributes.items():
-                        event_attrs[key] = value
-                events.append({
-                    "name": event.name,
-                    "timestamp": event.timestamp,
-                    "attributes": event_attrs,
-                })
-        
-        return {
-            "trace_id": format(ctx.trace_id, "032x"),
-            "span_id": format(ctx.span_id, "016x"),
-            "parent_id": format(parent.span_id, "016x") if parent else "",
-            "name": span.name,
-            "kind": span.kind.name if span.kind else "INTERNAL",
-            "start_time": span.start_time,
-            "end_time": span.end_time,
-            "duration_ms": (span.end_time - span.start_time) / 1_000_000 if span.end_time else 0,
-            "status": span.status.status_code.name if span.status else "UNSET",
-            "service": self.service_name,
-            "attributes": attrs,
-            "events": events,
-        }
+        # Create OTLP request
+        return ExportTraceServiceRequest(
+            resource_spans=[
+                ResourceSpans(
+                    resource=Resource(
+                        attributes=[
+                            KeyValue(
+                                key="service.name",
+                                value=AnyValue(string_value=self.service_name)
+                            )
+                        ]
+                    ),
+                    scope_spans=[
+                        ScopeSpans(spans=otlp_spans)
+                    ],
+                )
+            ]
+        )
+    
+    def _value_to_otlp(self, value) -> AnyValue:
+        """Convert a value to OTLP AnyValue."""
+        if isinstance(value, bool):
+            return AnyValue(bool_value=value)
+        elif isinstance(value, int):
+            return AnyValue(int_value=value)
+        elif isinstance(value, float):
+            return AnyValue(double_value=value)
+        elif isinstance(value, str):
+            return AnyValue(string_value=value)
+        else:
+            return AnyValue(string_value=str(value))

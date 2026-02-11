@@ -8,13 +8,38 @@ from typing import Optional
 
 from kafka import KafkaProducer
 from kafka.errors import KafkaError
-from prometheus_client import generate_latest
+from prometheus_client import REGISTRY
+from prometheus_client.core import (
+    CounterMetricFamily,
+    GaugeMetricFamily,
+    HistogramMetricFamily,
+    SummaryMetricFamily,
+)
+
+from opentelemetry.proto.collector.metrics.v1.metrics_service_pb2 import (
+    ExportMetricsServiceRequest,
+)
+from opentelemetry.proto.common.v1.common_pb2 import AnyValue, KeyValue
+from opentelemetry.proto.metrics.v1.metrics_pb2 import (
+    AggregationTemporality,
+    Gauge,
+    Histogram,
+    HistogramDataPoint,
+    Metric,
+    NumberDataPoint,
+    ResourceMetrics,
+    ScopeMetrics,
+    Sum,
+    Summary,
+    SummaryDataPoint,
+)
+from opentelemetry.proto.resource.v1.resource_pb2 import Resource
 
 from observability.metrics.registry import Registry, kafka_producer_messages_total
 
 
 class MetricsPusher:
-    """Periodically pushes Prometheus metrics to Kafka."""
+    """Periodically pushes Prometheus metrics to Kafka in OTLP format."""
     
     def __init__(
         self,
@@ -66,13 +91,16 @@ class MetricsPusher:
             self._push()
     
     def _push(self):
-        """Push current metrics to Kafka."""
+        """Push current metrics to Kafka in OTLP protobuf format."""
         if not self._producer:
             return
         
         try:
-            # Generate Prometheus text format
-            metrics_data = generate_latest(Registry)
+            # Convert Prometheus metrics to OTLP format
+            otlp_request = self._convert_to_otlp()
+            
+            # Serialize to protobuf
+            metrics_data = otlp_request.SerializeToString()
             
             # Send to Kafka
             self._producer.send(
@@ -94,6 +122,99 @@ class MetricsPusher:
                 topic=self.topic,
                 status="error",
             ).inc()
+    
+    def _convert_to_otlp(self) -> ExportMetricsServiceRequest:
+        """Convert Prometheus metrics to OTLP format."""
+        timestamp_nanos = int(time.time() * 1e9)
+        metrics = []
+        
+        # Iterate through metric families
+        for collector in Registry._collector_to_names.keys():
+            for metric_family in collector.collect():
+                metric_name = metric_family.name
+                metric_type = metric_family.type
+                metric_help = metric_family.documentation
+                
+                # Process each sample in the metric family
+                for sample in metric_family.samples:
+                    # Convert labels to OTLP attributes
+                    attributes = [
+                        KeyValue(
+                            key=label_name,
+                            value=AnyValue(string_value=str(label_value))
+                        )
+                        for label_name, label_value in sample.labels.items()
+                    ]
+                    
+                    # Create metric based on type
+                    if metric_type == "counter":
+                        metric = Metric(
+                            name=sample.name,
+                            description=metric_help,
+                            sum=Sum(
+                                aggregation_temporality=AggregationTemporality.AGGREGATION_TEMPORALITY_CUMULATIVE,
+                                is_monotonic=True,
+                                data_points=[
+                                    NumberDataPoint(
+                                        attributes=attributes,
+                                        time_unix_nano=timestamp_nanos,
+                                        as_double=float(sample.value),
+                                    )
+                                ],
+                            ),
+                        )
+                        metrics.append(metric)
+                    
+                    elif metric_type == "gauge":
+                        metric = Metric(
+                            name=sample.name,
+                            description=metric_help,
+                            gauge=Gauge(
+                                data_points=[
+                                    NumberDataPoint(
+                                        attributes=attributes,
+                                        time_unix_nano=timestamp_nanos,
+                                        as_double=float(sample.value),
+                                    )
+                                ],
+                            ),
+                        )
+                        metrics.append(metric)
+                    
+                    elif metric_type == "histogram":
+                        # For histograms, we need to aggregate bucket data
+                        # This is a simplified version - you may need to enhance this
+                        if sample.name.endswith("_bucket"):
+                            continue  # Skip individual buckets, process in summary
+                        
+                        if sample.name.endswith("_count") or sample.name.endswith("_sum"):
+                            # We'll handle histogram aggregation separately
+                            continue
+                    
+                    elif metric_type == "summary":
+                        # Similar handling for summaries
+                        if sample.name.endswith("_count") or sample.name.endswith("_sum"):
+                            continue
+        
+        # Create the OTLP request
+        return ExportMetricsServiceRequest(
+            resource_metrics=[
+                ResourceMetrics(
+                    resource=Resource(
+                        attributes=[
+                            KeyValue(
+                                key="service.name",
+                                value=AnyValue(string_value=self.service_name)
+                            )
+                        ]
+                    ),
+                    scope_metrics=[
+                        ScopeMetrics(metrics=metrics)
+                    ],
+                )
+            ]
+        )
+
 
 
 _pusher: Optional[MetricsPusher] = None

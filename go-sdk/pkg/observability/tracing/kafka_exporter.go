@@ -2,15 +2,20 @@ package tracing
 
 import (
 	"context"
-	"encoding/json"
 	"os"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/IBM/sarama"
+	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/sdk/trace"
 	oteltrace "go.opentelemetry.io/otel/trace"
+	"go.opentelemetry.io/proto/otlp/collector/trace/v1"
+	commonpb "go.opentelemetry.io/proto/otlp/common/v1"
+	resourcepb "go.opentelemetry.io/proto/otlp/resource/v1"
+	tracepb "go.opentelemetry.io/proto/otlp/trace/v1"
+	"google.golang.org/protobuf/proto"
 )
 
 // KafkaExporter exports OpenTelemetry spans to Kafka
@@ -75,7 +80,7 @@ func NewKafkaExporter(cfg *ExporterConfig) (*KafkaExporter, error) {
 	return exp, nil
 }
 
-// ExportSpans exports spans to Kafka
+// ExportSpans exports spans to Kafka in OTLP protobuf format
 func (e *KafkaExporter) ExportSpans(ctx context.Context, spans []trace.ReadOnlySpan) error {
 	e.mu.Lock()
 	if e.closed {
@@ -84,24 +89,33 @@ func (e *KafkaExporter) ExportSpans(ctx context.Context, spans []trace.ReadOnlyS
 	}
 	e.mu.Unlock()
 
-	for _, span := range spans {
-		data, err := e.spanToJSON(span)
-		if err != nil {
-			continue
-		}
+	// Convert to OTLP format
+	otlpSpans := e.convertToOTLP(spans)
+	
+	// Marshal to protobuf
+	data, err := proto.Marshal(otlpSpans)
+	if err != nil {
+		os.Stderr.WriteString("Failed to marshal OTLP traces: " + err.Error() + "\n")
+		return err
+	}
 
-		msg := &sarama.ProducerMessage{
-			Topic:     e.topic,
-			Key:       sarama.StringEncoder(span.SpanContext().TraceID().String()),
-			Value:     sarama.ByteEncoder(data),
-			Timestamp: time.Now(),
-		}
+	// Use first span's trace ID as key
+	var key string
+	if len(spans) > 0 {
+		key = spans[0].SpanContext().TraceID().String()
+	}
 
-		select {
-		case e.producer.Input() <- msg:
-		default:
-			// Channel full, drop span
-		}
+	msg := &sarama.ProducerMessage{
+		Topic:     e.topic,
+		Key:       sarama.StringEncoder(key),
+		Value:     sarama.ByteEncoder(data),
+		Timestamp: time.Now(),
+	}
+
+	select {
+	case e.producer.Input() <- msg:
+	default:
+		// Channel full, drop span
 	}
 
 	return nil
@@ -120,46 +134,118 @@ func (e *KafkaExporter) Shutdown(ctx context.Context) error {
 	return e.producer.Close()
 }
 
-// spanToJSON converts a span to JSON format
-func (e *KafkaExporter) spanToJSON(span trace.ReadOnlySpan) ([]byte, error) {
-	sc := span.SpanContext()
+// convertToOTLP converts OpenTelemetry spans to OTLP format
+func (e *KafkaExporter) convertToOTLP(spans []trace.ReadOnlySpan) *v1.ExportTraceServiceRequest {
+	var otlpSpans []*tracepb.Span
 
-	// Convert attributes to map
-	attrs := make(map[string]interface{})
-	for _, attr := range span.Attributes() {
-		attrs[string(attr.Key)] = attr.Value.AsInterface()
-	}
-
-	// Convert events
-	events := make([]map[string]interface{}, 0, len(span.Events()))
-	for _, event := range span.Events() {
-		eventAttrs := make(map[string]interface{})
-		for _, attr := range event.Attributes {
-			eventAttrs[string(attr.Key)] = attr.Value.AsInterface()
+	for _, span := range spans {
+		sc := span.SpanContext()
+		traceID := sc.TraceID()
+		spanID := sc.SpanID()
+		
+		var parentSpanID []byte
+		if span.Parent().IsValid() {
+			pid := span.Parent().SpanID()
+			parentSpanID = pid[:]
 		}
-		events = append(events, map[string]interface{}{
-			"name":       event.Name,
-			"timestamp":  event.Time.UnixNano(),
-			"attributes": eventAttrs,
-		})
+		
+		// Convert attributes
+		var attributes []*commonpb.KeyValue
+		for _, attr := range span.Attributes() {
+			attributes = append(attributes, &commonpb.KeyValue{
+				Key:   string(attr.Key),
+				Value: attributeValueToOTLP(attr.Value),
+			})
+		}
+
+		// Convert events
+		var events []*tracepb.Span_Event
+		for _, event := range span.Events() {
+			var eventAttrs []*commonpb.KeyValue
+			for _, attr := range event.Attributes {
+				eventAttrs = append(eventAttrs, &commonpb.KeyValue{
+					Key:   string(attr.Key),
+					Value: attributeValueToOTLP(attr.Value),
+				})
+			}
+			events = append(events, &tracepb.Span_Event{
+				TimeUnixNano: uint64(event.Time.UnixNano()),
+				Name:         event.Name,
+				Attributes:   eventAttrs,
+			})
+		}
+
+		// Convert status
+		status := &tracepb.Status{
+			Code: tracepb.Status_StatusCode(span.Status().Code),
+			Message: span.Status().Description,
+		}
+
+		otlpSpan := &tracepb.Span{
+			TraceId:           traceID[:],
+			SpanId:            spanID[:],
+			ParentSpanId:      parentSpanID,
+			Name:              span.Name(),
+			Kind:              tracepb.Span_SpanKind(span.SpanKind()),
+			StartTimeUnixNano: uint64(span.StartTime().UnixNano()),
+			EndTimeUnixNano:   uint64(span.EndTime().UnixNano()),
+			Attributes:        attributes,
+			Events:            events,
+			Status:            status,
+		}
+
+		otlpSpans = append(otlpSpans, otlpSpan)
 	}
 
-	spanData := map[string]interface{}{
-		"trace_id":    sc.TraceID().String(),
-		"span_id":     sc.SpanID().String(),
-		"parent_id":   span.Parent().SpanID().String(),
-		"name":        span.Name(),
-		"kind":        span.SpanKind().String(),
-		"start_time":  span.StartTime().UnixNano(),
-		"end_time":    span.EndTime().UnixNano(),
-		"duration_ms": span.EndTime().Sub(span.StartTime()).Milliseconds(),
-		"status":      span.Status().Code.String(),
-		"service":     e.serviceName,
-		"attributes":  attrs,
-		"events":      events,
+	return &v1.ExportTraceServiceRequest{
+		ResourceSpans: []*tracepb.ResourceSpans{
+			{
+				Resource: &resourcepb.Resource{
+					Attributes: []*commonpb.KeyValue{
+						{
+							Key: "service.name",
+							Value: &commonpb.AnyValue{
+								Value: &commonpb.AnyValue_StringValue{
+									StringValue: e.serviceName,
+								},
+							},
+						},
+					},
+				},
+				ScopeSpans: []*tracepb.ScopeSpans{
+					{
+						Spans: otlpSpans,
+					},
+				},
+			},
+		},
 	}
+}
 
-	return json.Marshal(spanData)
+// attributeValueToOTLP converts an attribute value to OTLP format
+func attributeValueToOTLP(value attribute.Value) *commonpb.AnyValue {
+	switch value.Type() {
+	case attribute.BOOL:
+		return &commonpb.AnyValue{
+			Value: &commonpb.AnyValue_BoolValue{BoolValue: value.AsBool()},
+		}
+	case attribute.INT64:
+		return &commonpb.AnyValue{
+			Value: &commonpb.AnyValue_IntValue{IntValue: value.AsInt64()},
+		}
+	case attribute.FLOAT64:
+		return &commonpb.AnyValue{
+			Value: &commonpb.AnyValue_DoubleValue{DoubleValue: value.AsFloat64()},
+		}
+	case attribute.STRING:
+		return &commonpb.AnyValue{
+			Value: &commonpb.AnyValue_StringValue{StringValue: value.AsString()},
+		}
+	default:
+		return &commonpb.AnyValue{
+			Value: &commonpb.AnyValue_StringValue{StringValue: value.AsString()},
+		}
+	}
 }
 
 func (e *KafkaExporter) handleErrors() {
