@@ -1,0 +1,83 @@
+data_dir: "/var/lib/vector"
+
+sources:
+  kafka_logs:
+    type: "kafka"
+    bootstrap_servers: "kafka:29092"
+    group_id: "vector-logs"
+    topics:
+      - "logs.application"
+    auto_offset_reset: "earliest"
+    decoding:
+      codec: "json"
+      json:
+        lossy: true
+
+transforms:
+  parse_logs:
+    type: "remap"
+    inputs:
+      - "kafka_logs"
+    source: |
+      # Timestamp handling
+      if exists(.timestamp) {
+        ts, err = parse_timestamp(.timestamp, format: "%+")
+        if err == null {
+          .@timestamp = ts
+        } else {
+          .@timestamp = now()
+        }
+      } else {
+        .@timestamp = now()
+      }
+
+      # Vector metadata
+      .pipeline = "vector"
+      .ingested_at = now()
+
+      # Required fields with defaults
+      if !exists(.service) || is_null(.service) {
+        .service = "unknown"
+      }
+      if !exists(.level) || is_null(.level) {
+        .level = "info"
+      }
+      if !exists(.environment) || is_null(.environment) {
+        .environment = "unknown"
+      }
+
+  route_logs:
+    type: "remap"
+    inputs:
+      - "parse_logs"
+    source: |
+      # Daily index pattern
+      .index = "logs-" + format_timestamp!(.@timestamp, format: "%Y.%m.%d")
+
+sinks:
+  elasticsearch_logs:
+    type: "elasticsearch"
+    inputs:
+      - "route_logs"
+    endpoints:
+      - "http://elasticsearch:9200"
+    api_version: "v8"
+    mode: "bulk"
+    bulk:
+      index: "{{ index }}"
+    buffer:
+      type: "disk"
+      max_size: 10737418240 # 10GB
+      when_full: "block"
+    healthcheck: true
+
+  console_debug:
+    type: "console"
+    inputs:
+      - "route_logs"
+    encoding:
+      codec: "json"
+
+api:
+  enabled: true
+  address: "0.0.0.0:8686"

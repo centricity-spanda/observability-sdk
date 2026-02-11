@@ -8,7 +8,7 @@ receivers:
       - kafka:29092
     topic: traces.application
     group_id: otel-traces
-    encoding: raw
+    encoding: otlp_proto # ← Changed from 'raw'
     initial_offset: earliest
 
   # Kafka receiver for metrics
@@ -17,7 +17,7 @@ receivers:
       - kafka:29092
     topic: metrics.application
     group_id: otel-metrics
-    encoding: raw
+    encoding: otlp_proto
     initial_offset: earliest
 
   # OTLP receiver for direct ingestion (optional)
@@ -65,17 +65,6 @@ exporters:
       initial_interval: 1s
       max_interval: 30s
 
-  # Elasticsearch exporter for metrics
-  elasticsearch/metrics:
-    endpoints:
-      - http://elasticsearch:9200
-    metrics_index: metrics
-    sending_queue:
-      enabled: true
-      num_consumers: 10
-    retry:
-      enabled: true
-
   # Debug exporter (remove in production)
   debug:
     verbosity: basic
@@ -84,8 +73,7 @@ exporters:
 
   # Prometheus exporter for self-monitoring
   prometheus:
-    endpoint: 0.0.0.0:8888
-    namespace: otel
+    endpoint: 0.0.0.0:9090 # ← Changed from 8888 to avoid conflict
 
 extensions:
   # Health check
@@ -102,20 +90,20 @@ extensions:
 
 service:
   extensions: [health_check, pprof, zpages]
-  
+
   pipelines:
     traces:
       receivers: [kafka/traces, otlp]
       processors: [memory_limiter, batch, resource]
       exporters: [elasticsearch/traces, debug]
-    
+
     metrics:
       receivers: [kafka/metrics, otlp]
       processors: [memory_limiter, batch, resource]
-      exporters: [elasticsearch/metrics, debug, prometheus]
+      exporters: [debug, prometheus]
 
   telemetry:
     logs:
       level: info
     metrics:
-      address: 0.0.0.0:8888
+      address: 0.0.0.0:8888 # Internal metrics remain on 8888

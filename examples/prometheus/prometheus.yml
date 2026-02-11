@@ -1,0 +1,17 @@
+# Prometheus configuration - scrapes metrics from OTEL Collector
+# OTEL Collector metrics pipeline exports on :9090; collector telemetry on :8888
+
+scrape_configs:
+  # Application metrics from OTEL Collector (Kafka + OTLP pipeline output)
+  - job_name: otel-collector-metrics
+    static_configs:
+      - targets: ["otel-collector:9090"]
+    scrape_interval: 15s
+    metrics_path: /metrics
+
+  # OTEL Collector internal telemetry (queue sizes, export counts, etc.)
+  - job_name: otel-collector-telemetry
+    static_configs:
+      - targets: ["otel-collector:8888"]
+    scrape_interval: 15s
+    metrics_path: /metrics

@@ -90,7 +90,7 @@ services:
       timeout: 10s
       retries: 10
 
-  # ============ VECTOR (Kafka consumer for logs) ============
+ # ============ VECTOR (Kafka consumer for logs) ============
   vector:
     image: timberio/vector:0.34.1-alpine
     container_name: vector
@@ -102,9 +102,16 @@ services:
     ports:
       - "8686:8686" # Vector API
     volumes:
-      - ./vector/vector.toml:/etc/vector/vector.toml:ro
+      - ./vector/vector.yaml:/etc/vector/vector.yaml:ro
+      - vector-data:/var/lib/vector
     environment:
       VECTOR_LOG: info
+    # Remove the command line - let it use default
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8686/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   # ============ OTEL COLLECTOR (Kafka consumer for traces/metrics) ============
   otel-collector:
@@ -118,11 +125,33 @@ services:
     ports:
       - "4317:4317" # OTLP gRPC
       - "4318:4318" # OTLP HTTP
-      - "8888:8888" # Prometheus metrics
+      - "8888:8888" # Collector internal telemetry (scrape for monitoring collector)
+      - "9090:9090" # Metrics pipeline output (Prometheus scrape target)
       - "13133:13133" # Health check
     volumes:
       - ./otel-collector/config.yaml:/etc/otelcol-contrib/config.yaml:ro
     command: [ "--config=/etc/otelcol-contrib/config.yaml" ]
+
+  # ============ PROMETHEUS (scrapes OTEL Collector metrics) ============
+  prometheus:
+    image: prom/prometheus:v2.47.0
+    container_name: prometheus
+    depends_on:
+      - otel-collector
+    ports:
+      - "9091:9090" # 9091 on host to avoid conflict with collector's 9090
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--web.enable-lifecycle"
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:9090/-/healthy"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   # ============ KAFKA UI ============
   kafka-ui:
@@ -139,3 +168,5 @@ services:
 
 volumes:
   elasticsearch-data:
+  vector-data:
+  prometheus-data:
