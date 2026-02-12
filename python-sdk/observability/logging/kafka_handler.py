@@ -34,7 +34,7 @@ class KafkaHandler:
             self._producer = KafkaProducer(
                 bootstrap_servers=self.config.kafka_brokers,
                 acks=acks,
-                compression_type="snappy",
+                compression_type="gzip",
                 value_serializer=lambda v: orjson.dumps(v),
                 retries=10 if self.config.is_audit_log else 3,
             )

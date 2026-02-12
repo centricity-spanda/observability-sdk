@@ -49,7 +49,7 @@ class KafkaSpanExporter(SpanExporter):
             self._producer = KafkaProducer(
                 bootstrap_servers=kafka_brokers,
                 acks=1,
-                compression_type="snappy",
+                compression_type="gzip",
             )
         except KafkaError as e:
             sys.stderr.write(f"Failed to initialize trace Kafka producer: {e}\n")
@@ -155,7 +155,7 @@ class KafkaSpanExporter(SpanExporter):
             
             # Convert status
             status = Status(
-                code=Status.StatusCode(span.status.status_code.value),
+                code=span.status.status_code.value,
                 message=span.status.description or "",
             )
             
@@ -165,7 +165,7 @@ class KafkaSpanExporter(SpanExporter):
                 span_id=ctx.span_id.to_bytes(8, "big"),
                 parent_span_id=parent.span_id.to_bytes(8, "big") if parent else b"",
                 name=span.name,
-                kind=Span.SpanKind(span.kind.value + 1),  # OTLP enum starts at 1
+                kind=span.kind.value + 1,  # OTLP enum starts at 1
                 start_time_unix_nano=span.start_time,
                 end_time_unix_nano=span.end_time or 0,
                 attributes=attributes,

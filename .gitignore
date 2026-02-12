@@ -1,0 +1,7 @@
+__pycache__/
+*.log
+*.json
+*.txt
+*.exe
+node_modules/
+dist/

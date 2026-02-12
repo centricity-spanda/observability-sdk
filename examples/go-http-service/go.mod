@@ -4,6 +4,7 @@ go 1.21
 
 require (
 	github.com/centricitywealthtech/platform-observability-sdk/go-sdk v0.0.0
+	github.com/joho/godotenv v1.5.1
 	go.uber.org/zap v1.27.0
 )
 

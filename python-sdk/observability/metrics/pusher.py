@@ -64,7 +64,7 @@ class MetricsPusher:
             self._producer = KafkaProducer(
                 bootstrap_servers=self.kafka_brokers,
                 acks=1,
-                compression_type="snappy",
+                compression_type="gzip",
             )
         except KafkaError as e:
             sys.stderr.write(f"Failed to initialize metrics Kafka producer: {e}\n")

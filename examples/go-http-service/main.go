@@ -13,9 +13,13 @@ import (
 
 	obs "github.com/centricitywealthtech/platform-observability-sdk/go-sdk/pkg/observability"
 	"github.com/centricitywealthtech/platform-observability-sdk/go-sdk/pkg/observability/tracing"
+	"github.com/joho/godotenv"
 )
 
 func main() {
+	// Load environment variables from .env file
+	_ = godotenv.Load()
+
 	// Initialize logger
 	logger, err := obs.NewLogger("example-service")
 	if err != nil {
