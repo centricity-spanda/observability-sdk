@@ -28,7 +28,7 @@ def new_tracer(service_name: str) -> trace.Tracer:
     global _tracer_provider
     
     # Get configuration from environment
-    environment = os.getenv("ENVIRONMENT", "production")
+    environment = _get_env("ENVIRONMENT", "production")
     service_version = os.getenv("SERVICE_VERSION", "unknown")
     
     # Parse sampling rate
@@ -89,3 +89,14 @@ def shutdown_tracer():
     if _tracer_provider:
         _tracer_provider.shutdown()
         _tracer_provider = None
+
+
+def _get_env(key: str, default: str) -> str:
+    """Get environment variable with fallback names for ENVIRONMENT."""
+    if key == "ENVIRONMENT":
+        for k in ["ENVIRONMENT", "ENV", "environment", "env"]:
+            v = os.getenv(k)
+            if v:
+                return v
+    
+    return os.getenv(key, default)

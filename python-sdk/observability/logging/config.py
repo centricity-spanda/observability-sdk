@@ -10,7 +10,7 @@ class LogConfig:
     """Configuration for logging."""
     
     service_name: str
-    environment: str = field(default_factory=lambda: os.getenv("ENVIRONMENT", "production"))
+    environment: str = field(default_factory=lambda: _get_env("ENVIRONMENT", "production"))
     service_version: str = field(default_factory=lambda: os.getenv("SERVICE_VERSION", "unknown"))
     kafka_brokers: List[str] = field(default_factory=list)
     log_topic: str = field(default_factory=lambda: os.getenv("KAFKA_LOG_TOPIC", "logs.application"))
@@ -48,6 +48,17 @@ class LogConfig:
 def new_config(service_name: str) -> LogConfig:
     """Create a new LogConfig from environment variables."""
     return LogConfig(service_name=service_name)
+
+
+def _get_env(key: str, default: str) -> str:
+    """Get environment variable with fallback names for ENVIRONMENT."""
+    if key == "ENVIRONMENT":
+        for k in ["ENVIRONMENT", "ENV", "environment", "env"]:
+            v = os.getenv(k)
+            if v:
+                return v
+    
+    return os.getenv(key, default)
 
 
 def _get_env_bool(key: str, default: bool = True) -> bool:

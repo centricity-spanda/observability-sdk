@@ -75,10 +75,10 @@ async def get_user_profile(request: Request):
         trace_id=get_trace_id(),
         user_id="USR-001",
         email="john.doe@example.com",      # Should be redacted
-        pan="ABCDE1234F",                  # Should be redacted
-        aadhaar="1234 5678 9012",          # Should be redacted
-        phone="+91 9876543210",            # Should be redacted
-        card_number="4111-1111-1111-1111", # Should be redacted
+        pan="GNYPP4789A",                  # Should be redacted
+        aadhaar="856102727756",          # Should be redacted
+        phone="+919876543210",            # Should be redacted
+        card_number="4111111111111111", # Should be redacted
     )
     
     return {"user_id": "USR-001", "name": "John Doe"}

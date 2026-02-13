@@ -228,7 +228,7 @@ def start_metrics_pusher(service_name: str) -> bool:
     global _pusher
     
     # Skip in development mode
-    if os.getenv("ENVIRONMENT", "production") == "development":
+    if _get_env("ENVIRONMENT", "production") == "development":
         return False
     
     # Check if Kafka export is enabled
@@ -263,3 +263,14 @@ def stop_metrics_pusher():
     if _pusher:
         _pusher.stop()
         _pusher = None
+
+
+def _get_env(key: str, default: str) -> str:
+    """Get environment variable with fallback names for ENVIRONMENT."""
+    if key == "ENVIRONMENT":
+        for k in ["ENVIRONMENT", "ENV", "environment", "env"]:
+            v = os.getenv(k)
+            if v:
+                return v
+    
+    return os.getenv(key, default)

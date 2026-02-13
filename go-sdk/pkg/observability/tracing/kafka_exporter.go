@@ -255,6 +255,13 @@ func (e *KafkaExporter) handleErrors() {
 }
 
 func getEnv(key, defaultValue string) string {
+	if key == "ENVIRONMENT" {
+		for _, k := range []string{"ENVIRONMENT", "ENV", "environment", "env"} {
+			if v := os.Getenv(k); v != "" {
+				return v
+			}
+		}
+	}
 	if value := os.Getenv(key); value != "" {
 		return value
 	}

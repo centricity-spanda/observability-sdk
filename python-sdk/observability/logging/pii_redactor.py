@@ -6,45 +6,127 @@ from typing import Any, Dict, List
 
 class PIIRedactor:
     """Redacts PII from log messages using regex patterns."""
-    
-    # Pre-compiled regex patterns for FinTech PII
-    PATTERNS = [
-        # PAN Card (India): ABCDE1234F
-        (re.compile(r'\b[A-Z]{5}[0-9]{4}[A-Z]\b'), '[PAN_REDACTED]'),
-        # Aadhaar (India): 1234 5678 9012 or 123456789012
-        (re.compile(r'\b\d{4}\s?\d{4}\s?\d{4}\b'), '[AADHAAR_REDACTED]'),
-        # Credit/Debit Card Numbers: 16 digits with optional spaces/dashes
-        (re.compile(r'\b\d{4}[\s-]?\d{4}[\s-]?\d{4}[\s-]?\d{4}\b'), '[CARD_REDACTED]'),
-        # Email addresses
-        (re.compile(r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b'), '[EMAIL_REDACTED]'),
-        # Phone numbers (India): +91 or 0 followed by 10 digits
-        (re.compile(r'\b(?:\+91[\s-]?|0)?[6-9]\d{9}\b'), '[PHONE_REDACTED]'),
-        # Bank Account Numbers: 9-18 digits
-        (re.compile(r'\b\d{9,18}\b'), '[ACCOUNT_REDACTED]'),
-        # IFSC Code: 4 letters + 0 + 6 alphanumeric
-        (re.compile(r'\b[A-Z]{4}0[A-Z0-9]{6}\b'), '[IFSC_REDACTED]'),
-        # Passport Number: Letter followed by 7 digits
-        (re.compile(r'\b[A-Z][0-9]{7}\b'), '[PASSPORT_REDACTED]'),
-        # SSN (US): XXX-XX-XXXX
-        (re.compile(r'\b\d{3}-\d{2}-\d{4}\b'), '[SSN_REDACTED]'),
-    ]
-    
-    # Field names that should be completely masked
-    SENSITIVE_FIELDS = frozenset({
-        'password', 'secret', 'token', 'api_key', 'apikey',
-        'authorization', 'credit_card', 'card_number', 'cvv',
-        'pin', 'ssn', 'aadhaar', 'pan', 'account_number',
-        'routing_number', 'private_key',
-    })
-    
+
+    @staticmethod
+    def _mask_pan(match: re.Match) -> str:
+        s = match.group(0)
+        return s[:5] + "****" + s[9:]
+
+    @staticmethod
+    def _mask_aadhaar(match: re.Match) -> str:
+        s = match.group(0)
+        chars = list(s)
+        digit_count = sum(1 for c in chars if c.isdigit())
+        seen = 0
+        for i, c in enumerate(chars):
+            if c.isdigit():
+                seen += 1
+                if seen <= digit_count - 4:
+                    chars[i] = 'X'
+        return "".join(chars)
+
+    @staticmethod
+    def _mask_card(match: re.Match) -> str:
+        s = match.group(0)
+        chars = list(s)
+        digit_count = sum(1 for c in chars if c.isdigit())
+        seen = 0
+        for i, c in enumerate(chars):
+            if c.isdigit():
+                seen += 1
+                if seen <= digit_count - 4:
+                    chars[i] = '*'
+        return "".join(chars)
+
+    @staticmethod
+    def _mask_email(match: re.Match) -> str:
+        s = match.group(0)
+        at_index = s.find("@")
+        if at_index > 0:
+            prefix = s[:at_index]
+            if len(prefix) > 1:
+                return prefix[0] + "***" + s[at_index:]
+            return "***" + s[at_index:]
+        return s
+
+    @staticmethod
+    def _mask_phone(match: re.Match) -> str:
+        s = match.group(0)
+        chars = list(s)
+        digit_count = sum(1 for c in chars if c.isdigit())
+        seen = 0
+        for i, c in enumerate(chars):
+            if c.isdigit():
+                seen += 1
+                if seen <= digit_count - 4:
+                    chars[i] = '*'
+        return "".join(chars)
+
+    @staticmethod
+    def _mask_account(match: re.Match) -> str:
+        s = match.group(0)
+        if len(s) > 4:
+            return "*" * (len(s) - 4) + s[-4:]
+        return "*" * len(s)
+
+    @staticmethod
+    def _mask_ifsc(match: re.Match) -> str:
+        s = match.group(0)
+        if len(s) == 11:
+            return s[:5] + "******"
+        return s
+
+    @staticmethod
+    def _mask_passport(match: re.Match) -> str:
+        s = match.group(0)
+        if len(s) > 2:
+            return s[0] + "*" * (len(s) - 2) + s[-1]
+        return s
+
+    @staticmethod
+    def _mask_ssn(match: re.Match) -> str:
+        s = match.group(0)
+        chars = list(s)
+        digit_count = sum(1 for c in chars if c.isdigit())
+        seen = 0
+        for i, c in enumerate(chars):
+            if c.isdigit():
+                seen += 1
+                if seen <= digit_count - 4:
+                    chars[i] = '*'
+        return "".join(chars)
+
     def __init__(self):
-        """Initialize the redactor."""
-        pass
-    
+        """Initialize the redactor with updated patterns and maskers."""
+        self.SENSITIVE_FIELDS = frozenset({
+            'password', 'secret', 'token', 'api_key', 'apikey',
+            'authorization', 'cvv', 'pin', 'private_key',
+        })
+        self.patterns = [
+            # PAN Card
+            (re.compile(r'\b[A-Z]{5}[0-9]{4}[A-Z]\b'), self._mask_pan),
+            # Aadhaar
+            (re.compile(r'\b(?:\d{4}\s?\d{4}\s?\d{4})\b'), self._mask_aadhaar),
+            # Credit/Debit Card
+            (re.compile(r'\b(?:\d[ -]*?){13,19}\b'), self._mask_card),
+            # Email
+            (re.compile(r'\b[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[A-Za-z]{2,}\b'), self._mask_email),
+            # Phone
+            (re.compile(r'\b(?:\+?\d{1,3}[-\s]?)?(?:\(?\d{3,5}\)?[-\s]?)?\d{5}[-\s]?\d{5}\b'), self._mask_phone),
+            # Bank Account
+            (re.compile(r'\b\d{9,18}\b'), self._mask_account),
+            # IFSC Code
+            (re.compile(r'\b[A-Z]{4}0[A-Z0-9]{6}\b'), self._mask_ifsc),
+            # Passport
+            (re.compile(r'\b[A-Z][0-9]{7}\b'), self._mask_passport),
+            # SSN
+            (re.compile(r'\b\d{3}-?\d{2}-?\d{4}\b'), self._mask_ssn),
+        ]
+
     def redact(self, value: str) -> str:
         """Apply all PII redaction patterns to a string."""
         result = value
-        for pattern, replacement in self.PATTERNS:
+        for pattern, replacement in self.patterns:
             result = pattern.sub(replacement, result)
         return result
     

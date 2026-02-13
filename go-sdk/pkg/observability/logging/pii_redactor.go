@@ -7,43 +7,165 @@ import (
 
 // PIIRedactor handles redaction of sensitive data in log messages
 type PIIRedactor struct {
-	patterns []*regexp.Regexp
-	replaces []string
+	patterns []redactionPattern
+}
+
+type redactionPattern struct {
+	re   *regexp.Regexp
+	mask func(string) string
 }
 
 // NewPIIRedactor creates a new redactor with default FinTech patterns
 func NewPIIRedactor() *PIIRedactor {
 	return &PIIRedactor{
-		patterns: []*regexp.Regexp{
-			// PAN Card (India): ABCDE1234F
-			regexp.MustCompile(`\b[A-Z]{5}[0-9]{4}[A-Z]\b`),
-			// Aadhaar (India): 1234 5678 9012 or 123456789012
-			regexp.MustCompile(`\b\d{4}\s?\d{4}\s?\d{4}\b`),
-			// Credit/Debit Card Numbers: 16 digits with optional spaces/dashes
-			regexp.MustCompile(`\b\d{4}[\s-]?\d{4}[\s-]?\d{4}[\s-]?\d{4}\b`),
-			// Email addresses
-			regexp.MustCompile(`\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b`),
-			// Phone numbers (India): +91 or 0 followed by 10 digits
-			regexp.MustCompile(`\b(?:\+91[\s-]?|0)?[6-9]\d{9}\b`),
-			// Bank Account Numbers: 9-18 digits
-			regexp.MustCompile(`\b\d{9,18}\b`),
-			// IFSC Code: 4 letters + 0 + 6 alphanumeric
-			regexp.MustCompile(`\b[A-Z]{4}0[A-Z0-9]{6}\b`),
-			// Passport Number: Letter followed by 7 digits
-			regexp.MustCompile(`\b[A-Z][0-9]{7}\b`),
-			// SSN (US): XXX-XX-XXXX
-			regexp.MustCompile(`\b\d{3}-\d{2}-\d{4}\b`),
-		},
-		replaces: []string{
-			"[PAN_REDACTED]",
-			"[AADHAAR_REDACTED]",
-			"[CARD_REDACTED]",
-			"[EMAIL_REDACTED]",
-			"[PHONE_REDACTED]",
-			"[ACCOUNT_REDACTED]",
-			"[IFSC_REDACTED]",
-			"[PASSPORT_REDACTED]",
-			"[SSN_REDACTED]",
+		patterns: []redactionPattern{
+			{
+				// PAN Card (India): ABCDE1234F -> ABCDE****F
+				re: regexp.MustCompile(`\b[A-Z]{5}[0-9]{4}[A-Z]\b`),
+				mask: func(s string) string {
+					if len(s) == 10 {
+						return s[:5] + "****" + s[9:]
+					}
+					return s
+				},
+			},
+			{
+				// Aadhaar (India): 1234 5678 9012 -> XXXX XXXX 1234
+				re: regexp.MustCompile(`\b(?:\d{4}\s?\d{4}\s?\d{4})\b`),
+				mask: func(s string) string {
+					rs := []rune(s)
+					digitCount := 0
+					for _, r := range rs {
+						if r >= '0' && r <= '9' {
+							digitCount++
+						}
+					}
+					seen := 0
+					for i, r := range rs {
+						if r >= '0' && r <= '9' {
+							seen++
+							if seen <= digitCount-4 {
+								rs[i] = 'X'
+							}
+						}
+					}
+					return string(rs)
+				},
+			},
+			{
+				// Credit/Debit Card: ************1234
+				re: regexp.MustCompile(`\b(?:\d[ -]*?){13,19}\b`),
+				mask: func(s string) string {
+					rs := []rune(s)
+					digitCount := 0
+					for _, r := range rs {
+						if r >= '0' && r <= '9' {
+							digitCount++
+						}
+					}
+					seen := 0
+					for i, r := range rs {
+						if r >= '0' && r <= '9' {
+							seen++
+							if seen <= digitCount-4 {
+								rs[i] = '*'
+							}
+						}
+					}
+					return string(rs)
+				},
+			},
+			{
+				// Email: j***@domain.com
+				re: regexp.MustCompile(`\b[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[A-Za-z]{2,}\b`),
+				mask: func(s string) string {
+					at := strings.Index(s, "@")
+					if at > 0 {
+						prefix := s[:at]
+						if len(prefix) > 1 {
+							return string(prefix[0]) + "***" + s[at:]
+						}
+						return "***" + s[at:]
+					}
+					return s
+				},
+			},
+			{
+				// Phone: ******3210
+				re: regexp.MustCompile(`\b(?:\+?\d{1,3}[-\s]?)?(?:\(?\d{3,5}\)?[-\s]?)?\d{5}[-\s]?\d{5}\b`),
+				mask: func(s string) string {
+					rs := []rune(s)
+					digitCount := 0
+					for _, r := range rs {
+						if r >= '0' && r <= '9' {
+							digitCount++
+						}
+					}
+					seen := 0
+					for i, r := range rs {
+						if r >= '0' && r <= '9' {
+							seen++
+							if seen <= digitCount-4 {
+								rs[i] = '*'
+							}
+						}
+					}
+					return string(rs)
+				},
+			},
+			{
+				// Account: ******7890
+				re: regexp.MustCompile(`\b\d{9,18}\b`),
+				mask: func(s string) string {
+					if len(s) > 4 {
+						return strings.Repeat("*", len(s)-4) + s[len(s)-4:]
+					}
+					return strings.Repeat("*", len(s))
+				},
+			},
+			{
+				// IFSC: SBIN0*****
+				re: regexp.MustCompile(`\b[A-Z]{4}0[A-Z0-9]{6}\b`),
+				mask: func(s string) string {
+					if len(s) == 11 {
+						return s[:5] + "******"
+					}
+					return s
+				},
+			},
+			{
+				// Passport: A******7
+				re: regexp.MustCompile(`\b[A-Z][0-9]{7}\b`),
+				mask: func(s string) string {
+					if len(s) > 2 {
+						return string(s[0]) + strings.Repeat("*", len(s)-2) + string(s[len(s)-1])
+					}
+					return s
+				},
+			},
+			{
+				// SSN: ***-**-6789
+				re: regexp.MustCompile(`\b\d{3}-?\d{2}-?\d{4}\b`),
+				mask: func(s string) string {
+					rs := []rune(s)
+					digitCount := 0
+					for _, r := range rs {
+						if r >= '0' && r <= '9' {
+							digitCount++
+						}
+					}
+					seen := 0
+					for i, r := range rs {
+						if r >= '0' && r <= '9' {
+							seen++
+							if seen <= digitCount-4 {
+								rs[i] = '*'
+							}
+						}
+					}
+					return string(rs)
+				},
+			},
 		},
 	}
 }
@@ -51,8 +173,8 @@ func NewPIIRedactor() *PIIRedactor {
 // Redact applies all PII redaction patterns to the input string
 func (r *PIIRedactor) Redact(input string) string {
 	result := input
-	for i, pattern := range r.patterns {
-		result = pattern.ReplaceAllString(result, r.replaces[i])
+	for _, p := range r.patterns {
+		result = p.re.ReplaceAllStringFunc(result, p.mask)
 	}
 	return result
 }
@@ -92,15 +214,8 @@ var SensitiveFields = map[string]bool{
 	"api_key":        true,
 	"apikey":         true,
 	"authorization":  true,
-	"credit_card":    true,
-	"card_number":    true,
 	"cvv":            true,
 	"pin":            true,
-	"ssn":            true,
-	"aadhaar":        true,
-	"pan":            true,
-	"account_number": true,
-	"routing_number": true,
 	"private_key":    true,
 }
 

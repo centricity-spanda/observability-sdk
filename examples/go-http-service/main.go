@@ -76,10 +76,10 @@ func main() {
 			zap.String("trace_id", tracing.GetTraceIDFromContext(ctx)),
 			zap.String("user_id", "USR-001"),
 			zap.String("email", "john.doe@example.com"),      // Should be redacted
-			zap.String("pan", "ABCDE1234F"),                  // Should be redacted
-			zap.String("aadhaar", "1234 5678 9012"),          // Should be redacted
-			zap.String("phone", "+91 9876543210"),            // Should be redacted
-			zap.String("card_number", "4111-1111-1111-1111"), // Should be redacted
+			zap.String("pan", "GNYPP4789A"),                  // Should be redacted
+			zap.String("aadhaar", "856102727756"),          // Should be redacted
+			zap.String("phone", "+919876543210"),            // Should be redacted
+			zap.String("card_number", "4111111111111111"), // Should be redacted
 		)
 
 		w.Header().Set("Content-Type", "application/json")
