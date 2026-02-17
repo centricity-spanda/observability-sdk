@@ -6,6 +6,7 @@ import (
 	"github.com/centricitywealthtech/platform-observability-sdk/go-sdk/pkg/observability/logging"
 	"github.com/centricitywealthtech/platform-observability-sdk/go-sdk/pkg/observability/metrics"
 	"github.com/centricitywealthtech/platform-observability-sdk/go-sdk/pkg/observability/tracing"
+	"go.opentelemetry.io/otel/codes"
 )
 
 // Re-export main functions for convenient access
@@ -28,3 +29,14 @@ var (
 	// HTTPTracingMiddleware wraps HTTP handlers with distributed tracing
 	HTTPTracingMiddleware = tracing.HTTPTracingMiddleware
 )
+
+// Re-export OpenTelemetry codes for span status
+const (
+	// StatusCodeUnset is the default status code
+	StatusCodeUnset = codes.Unset
+	// StatusCodeOK indicates the operation completed successfully
+	StatusCodeOK = codes.Ok
+	// StatusCodeError indicates the operation encountered an error
+	StatusCodeError = codes.Error
+)
+
