@@ -187,14 +187,37 @@ func (e *RedactingEncoder) EncodeEntry(entry zapcore.Entry, fields []zapcore.Fie
 	// Redact the message
 	entry.Message = e.redactor.Redact(entry.Message)
 
-	// Redact string fields
+	// Redact fields - delegate all logic to RedactValue
 	for i := range fields {
-		if fields[i].Type == zapcore.StringType {
-			// Check if it's a sensitive field
-			if IsSensitiveField(fields[i].Key) {
-				fields[i].String = "[REDACTED]"
-			} else {
-				fields[i].String = e.redactor.Redact(fields[i].String)
+		switch fields[i].Type {
+		case zapcore.StringType:
+			// Apply pattern matching to string values
+			fields[i].String = e.redactor.Redact(fields[i].String)
+
+		case zapcore.ReflectType:
+			// Delegate complex types to RedactValue (handles maps, slices, etc.)
+			if fields[i].Interface != nil {
+				fields[i].Interface = e.redactor.RedactValue(fields[i].Interface)
+			}
+		
+		case zapcore.StringerType:
+			// Convert stringer to string and redact
+			if fields[i].Interface != nil {
+				if s, ok := fields[i].Interface.(interface{ String() string }); ok {
+					fields[i].Type = zapcore.StringType
+					fields[i].String = e.redactor.Redact(s.String())
+					fields[i].Interface = nil
+				}
+			}
+
+		case zapcore.ErrorType:
+			// Redact error messages
+			if fields[i].Interface != nil {
+				if err, ok := fields[i].Interface.(error); ok {
+					fields[i].Type = zapcore.StringType
+					fields[i].String = e.redactor.Redact(err.Error())
+					fields[i].Interface = nil
+				}
 			}
 		}
 	}
