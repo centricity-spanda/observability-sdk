@@ -35,8 +35,8 @@ func NewTracer(serviceName string) (*TracerProvider, error) {
 		return nil, err
 	}
 
-	// Parse sampling rate
-	samplingRate := 0.1
+	// Parse sampling rate (default to 1.0 if not set or invalid)
+	samplingRate := 1.0
 	if rate := getEnv("TRACE_SAMPLING_RATE", ""); rate != "" {
 		if parsed, err := strconv.ParseFloat(rate, 64); err == nil {
 			samplingRate = parsed

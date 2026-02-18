@@ -31,11 +31,11 @@ def new_tracer(service_name: str) -> trace.Tracer:
     environment = _get_env("ENVIRONMENT", "production")
     service_version = os.getenv("SERVICE_VERSION", "unknown")
     
-    # Parse sampling rate
+    # Parse sampling rate (default to 1.0 if not set or invalid)
     try:
-        sampling_rate = float(os.getenv("TRACE_SAMPLING_RATE", "0.1"))
+        sampling_rate = float(os.getenv("TRACE_SAMPLING_RATE", "1.0"))
     except ValueError:
-        sampling_rate = 0.1
+        sampling_rate = 1.0
     
     # Create resource
     resource = Resource.create({
