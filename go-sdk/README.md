@@ -61,7 +61,7 @@ func main() {
 | `SERVICE_NAME` | Yes | - | Service identifier |
 | `ENVIRONMENT` | No | `production` | `production`/`development` |
 | `LOG_LEVEL` | No | `info` | Log level |
-| `TRACE_SAMPLING_RATE` | No | `0.1` | Trace sampling (0.0-1.0) |
+| `TRACE_SAMPLING_RATE` | No | `1.0` | Trace sampling (0.0-1.0) |
 
 ## Development Mode
 
