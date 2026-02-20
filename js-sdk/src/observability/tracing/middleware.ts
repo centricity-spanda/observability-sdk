@@ -36,6 +36,7 @@ export function HTTPTracingMiddleware(serviceName: string): RequestHandler {
         'http.route': path,
         'http.scheme': (req as unknown as { protocol?: string }).protocol?.replace(':', '') ?? 'http',
         'http.host': req.headers?.host ?? '',
+        'http.user_agent': req.headers?.['user-agent'] ?? '',
       },
     }, parentContext);
 

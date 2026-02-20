@@ -135,19 +135,16 @@ class MetricsPusher:
                 metric_type = metric_family.type
                 metric_help = metric_family.documentation
                 
-                # Process each sample in the metric family
-                for sample in metric_family.samples:
-                    # Convert labels to OTLP attributes
-                    attributes = [
-                        KeyValue(
-                            key=label_name,
-                            value=AnyValue(string_value=str(label_value))
-                        )
-                        for label_name, label_value in sample.labels.items()
-                    ]
-                    
-                    # Create metric based on type
-                    if metric_type == "counter":
+                # Create metric based on type
+                if metric_type == "counter":
+                    for sample in metric_family.samples:
+                        attributes = [
+                            KeyValue(
+                                key=label_name,
+                                value=AnyValue(string_value=str(label_value))
+                            )
+                            for label_name, label_value in sample.labels.items()
+                        ]
                         metric = Metric(
                             name=sample.name,
                             description=metric_help,
@@ -164,8 +161,16 @@ class MetricsPusher:
                             ),
                         )
                         metrics.append(metric)
-                    
-                    elif metric_type == "gauge":
+                
+                elif metric_type == "gauge":
+                    for sample in metric_family.samples:
+                        attributes = [
+                            KeyValue(
+                                key=label_name,
+                                value=AnyValue(string_value=str(label_value))
+                            )
+                            for label_name, label_value in sample.labels.items()
+                        ]
                         metric = Metric(
                             name=sample.name,
                             description=metric_help,
@@ -180,21 +185,116 @@ class MetricsPusher:
                             ),
                         )
                         metrics.append(metric)
-                    
-                    elif metric_type == "histogram":
-                        # For histograms, we need to aggregate bucket data
-                        # This is a simplified version - you may need to enhance this
-                        if sample.name.endswith("_bucket"):
-                            continue  # Skip individual buckets, process in summary
+                
+                elif metric_type == "histogram":
+                    # Group samples by label set (excluding 'le')
+                    groups: dict[str, dict] = {}
+                    for sample in metric_family.samples:
+                        labels_copy = {k: v for k, v in sample.labels.items() if k != "le"}
+                        key = str(sorted(labels_copy.items()))
                         
-                        if sample.name.endswith("_count") or sample.name.endswith("_sum"):
-                            # We'll handle histogram aggregation separately
-                            continue
+                        if key not in groups:
+                            groups[key] = {
+                                "labels": labels_copy,
+                                "bucket_bounds": [],
+                                "bucket_counts": [],
+                                "count": 0,
+                                "sum_value": 0.0,
+                            }
+                        group = groups[key]
+                        
+                        if sample.name.endswith("_bucket"):
+                            le = sample.labels.get("le", "")
+                            if le != "+Inf":
+                                group["bucket_bounds"].append(float(le))
+                                group["bucket_counts"].append(int(sample.value))
+                            else:
+                                # +Inf bucket — overflow count
+                                group["bucket_counts"].append(int(sample.value))
+                        elif sample.name.endswith("_count"):
+                            group["count"] = int(sample.value)
+                        elif sample.name.endswith("_sum"):
+                            group["sum_value"] = float(sample.value)
                     
-                    elif metric_type == "summary":
-                        # Similar handling for summaries
-                        if sample.name.endswith("_count") or sample.name.endswith("_sum"):
-                            continue
+                    for group in groups.values():
+                        attributes = [
+                            KeyValue(
+                                key=label_name,
+                                value=AnyValue(string_value=str(label_value))
+                            )
+                            for label_name, label_value in group["labels"].items()
+                        ]
+                        metric = Metric(
+                            name=metric_name,
+                            description=metric_help,
+                            histogram=Histogram(
+                                aggregation_temporality=AggregationTemporality.AGGREGATION_TEMPORALITY_CUMULATIVE,
+                                data_points=[
+                                    HistogramDataPoint(
+                                        attributes=attributes,
+                                        time_unix_nano=timestamp_nanos,
+                                        count=group["count"],
+                                        sum=group["sum_value"],
+                                        bucket_counts=group["bucket_counts"],
+                                        explicit_bounds=group["bucket_bounds"],
+                                    )
+                                ],
+                            ),
+                        )
+                        metrics.append(metric)
+                
+                elif metric_type == "summary":
+                    # Group samples by label set (excluding 'quantile')
+                    groups = {}
+                    for sample in metric_family.samples:
+                        labels_copy = {k: v for k, v in sample.labels.items() if k != "quantile"}
+                        key = str(sorted(labels_copy.items()))
+                        
+                        if key not in groups:
+                            groups[key] = {
+                                "labels": labels_copy,
+                                "quantiles": [],
+                                "count": 0,
+                                "sum_value": 0.0,
+                            }
+                        group = groups[key]
+                        
+                        if sample.name.endswith("_count"):
+                            group["count"] = int(sample.value)
+                        elif sample.name.endswith("_sum"):
+                            group["sum_value"] = float(sample.value)
+                        elif "quantile" in sample.labels:
+                            group["quantiles"].append(
+                                SummaryDataPoint.ValueAtQuantile(
+                                    quantile=float(sample.labels["quantile"]),
+                                    value=float(sample.value),
+                                )
+                            )
+                    
+                    for group in groups.values():
+                        attributes = [
+                            KeyValue(
+                                key=label_name,
+                                value=AnyValue(string_value=str(label_value))
+                            )
+                            for label_name, label_value in group["labels"].items()
+                        ]
+                        metric = Metric(
+                            name=metric_name,
+                            description=metric_help,
+                            summary=Summary(
+                                data_points=[
+                                    SummaryDataPoint(
+                                        attributes=attributes,
+                                        time_unix_nano=timestamp_nanos,
+                                        count=group["count"],
+                                        sum=group["sum_value"],
+                                        quantile_values=group["quantiles"],
+                                    )
+                                ],
+                            ),
+                        )
+                        metrics.append(metric)
         
         # Create the OTLP request
         return ExportMetricsServiceRequest(

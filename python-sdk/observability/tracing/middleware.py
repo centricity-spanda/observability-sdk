@@ -42,6 +42,7 @@ class HTTPTracingMiddleware:
                 "http.route": path,
                 "http.scheme": scope.get("scheme", "http"),
                 "http.host": headers.get(b"host", b"").decode() if b"host" in headers else "",
+                "http.user_agent": headers.get(b"user-agent", b"").decode() if b"user-agent" in headers else "",
             },
         ) as span:
             try:
@@ -84,6 +85,7 @@ def flask_tracing_middleware(service_name: str) -> Callable:
                 "http.route": request.path,
                 "http.scheme": request.scheme,
                 "http.host": request.host,
+                "http.user_agent": request.headers.get("User-Agent", ""),
             },
         )
         g._trace_span = span

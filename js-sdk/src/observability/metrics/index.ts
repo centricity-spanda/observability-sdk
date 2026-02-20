@@ -11,6 +11,13 @@ export function startMetricsPusher(serviceName: string) {
         return;
     }
 
+    // Skip Kafka push in development mode (matching Go/Python SDKs)
+    if (getEnv('ENVIRONMENT', 'production') === 'development') {
+        console.log('Metrics Kafka pusher disabled in development mode');
+        collectDefaultMetrics({ prefix: '' });
+        return;
+    }
+
     // Default metrics
     collectDefaultMetrics({ prefix: '' });
 
