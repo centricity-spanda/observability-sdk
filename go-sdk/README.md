@@ -29,8 +29,8 @@ func main() {
     // 2. Start metrics pusher (pushes to Kafka every 15s)
     obs.StartMetricsPusher("my-service")
 
-    // 3. Initialize tracer
-    tp, _ := obs.NewTracer("my-service")
+    // 3. Initialize tracer (one per process; use returned tracer for spans)
+    tracer, tp, _ := obs.NewTracer("my-service")
     defer tp.Shutdown(context.Background())
 
     // 4. Apply middleware
@@ -134,19 +134,16 @@ Custom metrics are automatically picked up by the Kafka pusher — no additional
 
 ### Tracing
 
-The SDK creates an [OpenTelemetry](https://opentelemetry.io) tracer with Kafka export:
+The SDK creates an [OpenTelemetry](https://opentelemetry.io) tracer with Kafka export. Create one tracer per process and use the instance returned by `NewTracer` (or store it and provide a getter):
 
 ```go
-tp, _ := obs.NewTracer("my-service")
+tracer, tp, _ := obs.NewTracer("my-service")
 defer tp.Shutdown(context.Background())
 
 // Automatic spans for HTTP requests:
 handler := obs.HTTPTracingMiddleware("my-service")(yourHandler)
 
-// Manual spans inside your handlers:
-import "go.opentelemetry.io/otel"
-
-tracer := otel.Tracer("my-service")
+// Manual spans inside your handlers (use the tracer returned above):
 ctx, span := tracer.Start(r.Context(), "process-payment")
 defer span.End()
 

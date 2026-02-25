@@ -10,6 +10,7 @@ import (
 	"go.opentelemetry.io/otel/sdk/resource"
 	"go.opentelemetry.io/otel/sdk/trace"
 	semconv "go.opentelemetry.io/otel/semconv/v1.21.0"
+	apitrace "go.opentelemetry.io/otel/trace"
 )
 
 // TracerProvider wraps the OpenTelemetry TracerProvider
@@ -17,8 +18,9 @@ type TracerProvider struct {
 	*trace.TracerProvider
 }
 
-// NewTracer creates a new OpenTelemetry tracer with Kafka exporter
-func NewTracer(serviceName string) (*TracerProvider, error) {
+// NewTracer creates a new OpenTelemetry tracer with Kafka exporter.
+// It returns the tracer instance (for creating spans), the TracerProvider (for shutdown), and any error.
+func NewTracer(serviceName string) (apitrace.Tracer, *TracerProvider, error) {
 	cfg := NewExporterConfig(serviceName)
 
 	// Create resource with service info
@@ -32,7 +34,7 @@ func NewTracer(serviceName string) (*TracerProvider, error) {
 		),
 	)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	// Parse sampling rate (default to 1.0 if not set or invalid)
@@ -58,7 +60,8 @@ func NewTracer(serviceName string) (*TracerProvider, error) {
 			propagation.TraceContext{},
 			propagation.Baggage{},
 		))
-		return &TracerProvider{tp}, nil
+		tr := tp.Tracer(serviceName)
+		return tr, &TracerProvider{tp}, nil
 	}
 
 	// Create Kafka exporter if enabled
@@ -67,7 +70,7 @@ func NewTracer(serviceName string) (*TracerProvider, error) {
 	} else {
 		exporter, err := NewKafkaExporter(cfg)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 
 		if exporter != nil {
@@ -87,7 +90,8 @@ func NewTracer(serviceName string) (*TracerProvider, error) {
 		propagation.Baggage{},
 	))
 
-	return &TracerProvider{tp}, nil
+	tr := tp.Tracer(serviceName)
+	return tr, &TracerProvider{tp}, nil
 }
 
 // Shutdown gracefully shuts down the tracer provider

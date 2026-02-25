@@ -1,36 +1,24 @@
 /**
  * Example Node HTTP service with observability SDK.
+ * Single init: one logger, one tracer, one metrics pusher; use getLogger()/getTracer().
  * Mirrors examples/go-http-service and examples/python-fastapi-service.
  */
 
 import 'dotenv/config';
 import express, { Request, Response } from 'express';
+import { HTTPTracingMiddleware, HTTPMetricsMiddleware } from 'centricity-observability';
 import {
-  newLogger,
-  newTracer,
+  initializeObservability,
+  getLogger,
   getTraceId,
-  startMetricsPusher,
-  stopMetricsPusher,
-  HTTPTracingMiddleware,
-  HTTPMetricsMiddleware,
-} from 'centricity-observability';
+  shutdown as observabilityShutdown,
+} from './observability';
 
 const SERVICE_NAME = process.env.SERVICE_NAME ?? 'example-service-node';
 const PORT = process.env.PORT ?? '8088';
 
-// Initialize observability (sync where possible)
-const logger = newLogger(SERVICE_NAME);
-
 async function main() {
-  // Start metrics pusher (no-op in development or when Kafka disabled; non-fatal if Kafka unreachable)
-  try {
-    await startMetricsPusher(SERVICE_NAME);
-  } catch (err) {
-    logger.warn({ err }, 'metrics pusher failed to start; continuing without Kafka metrics');
-  }
-
-  // Initialize tracer and set global provider
-  const { shutdown: shutdownTracer } = newTracer(SERVICE_NAME);
+  await initializeObservability(SERVICE_NAME);
 
   const app = express();
   app.use(express.json());
@@ -45,15 +33,14 @@ async function main() {
 
   app.post('/api/payment', (req: Request, res: Response) => {
     const traceId = getTraceId();
-    console.log('traceId', traceId);
-    logger.info(
+    getLogger().info(
       { trace_id: traceId, payment_id: 'PAY-12345', amount: 1500.5 },
       'processing payment'
     );
 
     // Simulate work
     setTimeout(() => {
-      logger.info({ payment_id: 'PAY-12345' }, 'payment completed');
+      getLogger().info({ payment_id: 'PAY-12345' }, 'payment completed');
       res.status(200).json({ status: 'completed', payment_id: 'PAY-12345' });
     }, 100);
   });
@@ -61,7 +48,7 @@ async function main() {
   app.get('/api/users', (req: Request, res: Response) => {
     const traceId = getTraceId();
     // Log with PII-like fields to test redaction (when LOG_PII_REDACTION_ENABLED=true)
-    logger.info(
+    getLogger().info(
       {
         trace_id: traceId,
         password: 'secret123',
@@ -79,13 +66,12 @@ async function main() {
   });
 
   const server = app.listen(PORT, () => {
-    logger.info({ addr: `:${PORT}` }, 'starting server');
+    getLogger().info({ addr: `:${PORT}` }, 'starting server');
   });
 
   const shutdown = async () => {
-    logger.info('shutting down server');
-    stopMetricsPusher();
-    await shutdownTracer();
+    getLogger().info('shutting down server');
+    await observabilityShutdown();
     server.close(() => process.exit(0));
   };
 
@@ -94,6 +80,10 @@ async function main() {
 }
 
 main().catch((err) => {
-  logger.error({ err }, 'failed to start');
+  try {
+    getLogger().error({ err }, 'failed to start');
+  } catch {
+    console.error('failed to start', err);
+  }
   process.exit(1);
 });
