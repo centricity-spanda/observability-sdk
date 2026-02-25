@@ -1,21 +1,18 @@
 """Logger factory for Python services."""
 
 import logging
-import os
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Dict, Optional, Tuple
 
 import structlog
 from structlog.types import Processor
 
 from observability.logging.config import LogConfig, new_config
-from observability.logging.kafka_handler import KafkaHandler
 from observability.logging.pii_redactor import redact_log_event
 
 
-_kafka_handler: Optional[KafkaHandler] = None
 _file_handler: Optional[logging.FileHandler] = None
 
 
@@ -28,14 +25,6 @@ def _add_timestamp(logger: Any, method_name: str, event_dict: dict) -> dict:
 def _pii_redact_processor(logger: Any, method_name: str, event_dict: dict) -> dict:
     """Apply PII redaction to log record."""
     return redact_log_event(event_dict)
-
-
-def _kafka_processor(logger: Any, method_name: str, event_dict: dict) -> dict:
-    """Send log record to Kafka."""
-    global _kafka_handler
-    if _kafka_handler:
-        _kafka_handler.emit(event_dict)
-    return event_dict
 
 
 def _file_processor(logger: Any, method_name: str, event_dict: dict) -> dict:
@@ -58,17 +47,62 @@ def new_logger(service_name: str) -> structlog.BoundLogger:
     Returns:
         A configured structlog logger.
     """
-    global _kafka_handler, _file_handler
+    global _file_handler
     
     config = new_config(service_name)
     
     # Initialize file handler if enabled
     if config.enable_file and _file_handler is None:
         _file_handler = _create_file_handler(config.log_file_path)
-    
-    # Initialize Kafka handler if not in development and enabled
-    if not config.is_development and config.enable_kafka and _kafka_handler is None:
-        _kafka_handler = KafkaHandler(config)
+
+    def _format_log_schema(logger: Any, method_name: str, event_dict: Dict[str, Any]) -> Dict[str, Any]:
+        """Shape log record into the unified envelope schema.
+
+        Input:  flat structlog event dict (already PII-redacted).
+        Output: envelope with timestamp, severity, service block, attributes, error.
+        """
+        # Pull out basic fields
+        timestamp = event_dict.pop("timestamp", datetime.now(timezone.utc).isoformat())
+        severity = str(event_dict.pop("level", method_name.upper())).upper()
+        message = str(event_dict.pop("event", ""))
+
+        severity_num = _severity_to_number(severity)
+
+        # Build service block from config
+        service_block: Dict[str, Any] = {
+            "service.name": config.service_name,
+            "service.version": config.service_version,
+            "service.namespace": config.service_namespace,
+            "deployment.environment": config.environment,
+        }
+        if config.host_name:
+            service_block["host.name"] = config.host_name
+        if config.k8s_pod_name:
+            service_block["k8s.pod.name"] = config.k8s_pod_name
+        if config.k8s_namespace_name:
+            service_block["k8s.namespace.name"] = config.k8s_namespace_name
+        if config.k8s_node_name:
+            service_block["k8s.node.name"] = config.k8s_node_name
+
+        # Extract error details if present
+        error_block = {}
+        if "exception" in event_dict:
+            error_block = {"exception": event_dict.pop("exception")}
+        elif "error" in event_dict and isinstance(event_dict["error"], dict):
+            error_block = event_dict.pop("error")
+
+        # Remaining keys are treated as attributes
+        attributes = dict(event_dict)
+
+        return {
+            "timestamp": timestamp,
+            "severity": severity,
+            "severity_num": severity_num,
+            "message": message,
+            "service": service_block,
+            "attributes": attributes,
+            "error": error_block,
+        }
     
     # Build processor chain
     processors: list[Processor] = [
@@ -83,10 +117,9 @@ def new_logger(service_name: str) -> structlog.BoundLogger:
     if config.enable_pii_redaction:
         processors.append(_pii_redact_processor)
     
-    # Add Kafka processor if enabled
-    if config.enable_kafka and not config.is_development and _kafka_handler:
-        processors.append(_kafka_processor)
-    
+    # Shape into unified log schema envelope
+    processors.append(_format_log_schema)
+
     # Add file processor if enabled
     if config.enable_file and _file_handler:
         processors.append(_file_processor)
@@ -129,6 +162,21 @@ def _log_level_to_int(level: str) -> int:
         "critical": 50,
     }
     return levels.get(level.lower(), 20)
+
+
+def _severity_to_number(severity: str) -> int:
+    """Map severity text to OpenTelemetry-style numeric severity."""
+    mapping = {
+        "TRACE": 1,
+        "DEBUG": 5,
+        "INFO": 9,
+        "WARN": 13,
+        "WARNING": 13,
+        "ERROR": 17,
+        "FATAL": 21,
+        "CRITICAL": 21,
+    }
+    return mapping.get(severity.upper(), 9)
 
 
 def _create_file_handler(path: str) -> Optional[logging.FileHandler]:

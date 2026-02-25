@@ -12,6 +12,12 @@ class LogConfig:
     service_name: str
     environment: str = field(default_factory=lambda: _get_env("ENVIRONMENT", "production"))
     service_version: str = field(default_factory=lambda: os.getenv("SERVICE_VERSION", "unknown"))
+    # Extended service metadata for structured logs
+    service_namespace: str = field(default_factory=lambda: os.getenv("SERVICE_NAMESPACE", "default"))
+    host_name: str = field(default_factory=lambda: os.getenv("HOST_NAME", os.getenv("HOSTNAME", "")))
+    k8s_pod_name: str = field(default_factory=lambda: os.getenv("K8S_POD_NAME", ""))
+    k8s_namespace_name: str = field(default_factory=lambda: os.getenv("K8S_NAMESPACE_NAME", ""))
+    k8s_node_name: str = field(default_factory=lambda: os.getenv("K8S_NODE_NAME", ""))
     kafka_brokers: List[str] = field(default_factory=list)
     log_topic: str = field(default_factory=lambda: os.getenv("KAFKA_LOG_TOPIC", "logs.application"))
     log_level: str = field(default_factory=lambda: os.getenv("LOG_LEVEL", "info"))

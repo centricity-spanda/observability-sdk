@@ -26,7 +26,7 @@ SERVICE_NAME = "example-service-python"
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Startup and shutdown events."""
-    # Startup: single observability init (logger, tracer, metrics pusher)
+    # Startup: single observability init (logger, tracer, metrics exporter)
     initialize_observability(SERVICE_NAME)
     get_logger().info("service starting")
     yield
@@ -52,8 +52,6 @@ async def process_payment(request: Request):
     """Example payment endpoint with observability."""
     logger = get_logger()
     tracer = get_tracer()
-
-    console.log("tracer",tracer)
 
     # Log with trace correlation
     logger.info(

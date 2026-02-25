@@ -1,0 +1,30 @@
+data_dir: "/var/lib/vector"
+
+sources:
+  docker_logs:
+    type: "docker_logs"
+    docker_host: "unix:///var/run/docker.sock"
+    exclude_containers:
+      - "vector"
+      - "vector-agent"
+      - "kafka"
+      - "zookeeper"
+      - "loki"
+      - "tempo"
+      - "mimir"
+      - "grafana"
+      - "otel-agent"
+      - "otel-gateway"
+      - "kafka-ui"
+      - "kafka-init"
+
+sinks:
+  kafka_logs:
+    type: "kafka"
+    inputs:
+      - "docker_logs"
+    bootstrap_servers: "kafka:29092"
+    topic: "logs.application"
+    encoding:
+      codec: "json"
+

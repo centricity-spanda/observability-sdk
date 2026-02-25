@@ -6,8 +6,7 @@ import threading
 import time
 from typing import Optional
 
-from kafka import KafkaProducer
-from kafka.errors import KafkaError
+import grpc
 from prometheus_client import REGISTRY
 from prometheus_client.core import (
     CounterMetricFamily,
@@ -35,44 +34,45 @@ from opentelemetry.proto.metrics.v1.metrics_pb2 import (
 )
 from opentelemetry.proto.resource.v1.resource_pb2 import Resource
 
-from observability.metrics.registry import Registry, kafka_producer_messages_total
+from opentelemetry.proto.collector.metrics.v1.metrics_service_pb2_grpc import (
+    MetricsServiceStub,
+)
+
+from observability.metrics.registry import Registry
 
 
 class MetricsPusher:
-    """Periodically pushes Prometheus metrics to Kafka in OTLP format."""
+    """Periodically pushes Prometheus metrics to an OTEL collector via OTLP gRPC."""
     
     def __init__(
         self,
         service_name: str,
-        kafka_brokers: list[str],
-        topic: str,
+        otlp_endpoint: str,
         interval: float,
     ):
         self.service_name = service_name
-        self.kafka_brokers = kafka_brokers
-        self.topic = topic
+        self.otlp_endpoint = otlp_endpoint
         self.interval = interval
-        self._producer: Optional[KafkaProducer] = None
+        self._channel: Optional[grpc.Channel] = None
+        self._stub: Optional[MetricsServiceStub] = None
         self._stop_event = threading.Event()
         self._thread: Optional[threading.Thread] = None
         
-        self._init_producer()
+        self._init_client()
     
-    def _init_producer(self):
-        """Initialize Kafka producer."""
+    def _init_client(self):
+        """Initialize OTLP gRPC client."""
         try:
-            self._producer = KafkaProducer(
-                bootstrap_servers=self.kafka_brokers,
-                acks=1,
-                compression_type="gzip",
-            )
-        except KafkaError as e:
-            sys.stderr.write(f"Failed to initialize metrics Kafka producer: {e}\n")
-            self._producer = None
+            self._channel = grpc.insecure_channel(self.otlp_endpoint)
+            self._stub = MetricsServiceStub(self._channel)
+        except Exception as e:
+            sys.stderr.write(f"Failed to initialize OTLP metrics client: {e}\n")
+            self._channel = None
+            self._stub = None
     
     def start(self):
         """Start the background push thread."""
-        if self._producer:
+        if self._stub:
             self._thread = threading.Thread(target=self._push_loop, daemon=True)
             self._thread.start()
     
@@ -81,9 +81,8 @@ class MetricsPusher:
         self._stop_event.set()
         if self._thread:
             self._thread.join(timeout=5.0)
-        if self._producer:
-            self._push()  # Final push
-            self._producer.close()
+        if self._channel:
+            self._channel.close()
     
     def _push_loop(self):
         """Background loop to push metrics."""
@@ -91,37 +90,18 @@ class MetricsPusher:
             self._push()
     
     def _push(self):
-        """Push current metrics to Kafka in OTLP protobuf format."""
-        if not self._producer:
+        """Push current metrics to OTEL collector in OTLP protobuf format."""
+        if not self._stub:
             return
         
         try:
             # Convert Prometheus metrics to OTLP format
             otlp_request = self._convert_to_otlp()
             
-            # Serialize to protobuf
-            metrics_data = otlp_request.SerializeToString()
-            
-            # Send to Kafka
-            self._producer.send(
-                self.topic,
-                key=self.service_name.encode(),
-                value=metrics_data,
-            )
-            self._producer.flush()
-            
-            kafka_producer_messages_total.labels(
-                service=self.service_name,
-                topic=self.topic,
-                status="success",
-            ).inc()
+            # Send via OTLP gRPC
+            self._stub.Export(otlp_request)
         except Exception as e:
             sys.stderr.write(f"Failed to push metrics: {e}\n")
-            kafka_producer_messages_total.labels(
-                service=self.service_name,
-                topic=self.topic,
-                status="error",
-            ).inc()
     
     def _convert_to_otlp(self) -> ExportMetricsServiceRequest:
         """Convert Prometheus metrics to OTLP format."""
@@ -331,18 +311,6 @@ def start_metrics_pusher(service_name: str) -> bool:
     if _get_env("ENVIRONMENT", "production") == "development":
         return False
     
-    # Check if Kafka export is enabled
-    if os.getenv("METRICS_KAFKA_ENABLED", "true").lower() not in ("true", "1", "yes"):
-        return False
-    
-    # Get configuration from environment
-    brokers = os.getenv("KAFKA_BROKERS", "")
-    if not brokers:
-        sys.stderr.write("Warning: KAFKA_BROKERS not set, metrics push disabled\n")
-        return False
-    
-    kafka_brokers = [b.strip() for b in brokers.split(",")]
-    topic = os.getenv("KAFKA_METRICS_TOPIC", "metrics.application")
     interval_str = os.getenv("METRICS_PUSH_INTERVAL", "15")
     
     # Parse interval (remove 's' suffix if present)
@@ -351,7 +319,12 @@ def start_metrics_pusher(service_name: str) -> bool:
     except ValueError:
         interval = 15.0
     
-    _pusher = MetricsPusher(service_name, kafka_brokers, topic, interval)
+    # Determine OTLP endpoint (collector agent)
+    endpoint = os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:4317")
+    if "://" in endpoint:
+        endpoint = endpoint.split("://", 1)[1]
+
+    _pusher = MetricsPusher(service_name, endpoint, interval)
     _pusher.start()
     
     return True

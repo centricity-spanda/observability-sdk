@@ -54,50 +54,14 @@ services:
       echo 'Topics created!'
       "
 
-  # ============ ELASTICSEARCH ============
-  elasticsearch:
-    image: docker.elastic.co/elasticsearch/elasticsearch:8.11.0
-    container_name: elasticsearch
-    environment:
-      - discovery.type=single-node
-      - xpack.security.enabled=false
-      - "ES_JAVA_OPTS=-Xms512m -Xmx512m"
-    ports:
-      - "9200:9200"
-      - "9300:9300"
-    volumes:
-      - elasticsearch-data:/usr/share/elasticsearch/data
-    healthcheck:
-      test: [ "CMD-SHELL", "curl -s http://localhost:9200/_cluster/health | grep -vq '\"status\":\"red\"'" ]
-      interval: 20s
-      timeout: 10s
-      retries: 10
-
-  # ============ KIBANA ============
-  kibana:
-    image: docker.elastic.co/kibana/kibana:8.11.0
-    container_name: kibana
-    depends_on:
-      elasticsearch:
-        condition: service_healthy
-    ports:
-      - "5601:5601"
-    environment:
-      ELASTICSEARCH_HOSTS: http://elasticsearch:9200
-    healthcheck:
-      test: [ "CMD-SHELL", "curl -s http://localhost:5601/api/status | grep -q 'available'" ]
-      interval: 30s
-      timeout: 10s
-      retries: 10
-
- # ============ VECTOR (Kafka consumer for logs) ============
+  # ============ VECTOR (Kafka consumer for logs -> Loki) ============
   vector:
     image: timberio/vector:0.34.1-alpine
     container_name: vector
     depends_on:
       kafka:
         condition: service_healthy
-      elasticsearch:
+      loki:
         condition: service_healthy
     ports:
       - "8686:8686" # Vector API
@@ -106,54 +70,59 @@ services:
       - vector-data:/var/lib/vector
     environment:
       VECTOR_LOG: info
-    # Remove the command line - let it use default
     healthcheck:
       test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8686/health"]
       interval: 10s
       timeout: 5s
       retries: 5
 
-  # ============ OTEL COLLECTOR (Kafka consumer for traces/metrics) ============
-  otel-collector:
-    image: otel/opentelemetry-collector-contrib:0.91.0
-    container_name: otel-collector
+  # ============ VECTOR AGENT (docker logs -> Kafka) ============
+  vector-agent:
+    image: timberio/vector:0.34.1-alpine
+    container_name: vector-agent
     depends_on:
       kafka:
         condition: service_healthy
-      elasticsearch:
+    volumes:
+      - ./vector/vector-agent.yaml:/etc/vector/vector.yaml:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - vector-agent-data:/var/lib/vector
+    environment:
+      VECTOR_LOG: info
+
+  # ============ OTEL COLLECTOR GATEWAY (Kafka consumer for traces/metrics) ============
+  otel-gateway:
+    image: otel/opentelemetry-collector-contrib:0.91.0
+    container_name: otel-gateway
+    depends_on:
+      kafka:
         condition: service_healthy
-      jaeger:
-        condition: service_healthy
+      tempo:
+        condition: service_started
+      mimir:
+        condition: service_started
     ports:
-      - "4317:4317" # OTLP gRPC
-      - "4318:4318" # OTLP HTTP
-      - "8888:8888" # Collector internal telemetry (scrape for monitoring collector)
-      - "9090:9090" # Metrics pipeline output (Prometheus scrape target)
+      - "8888:8888"   # Collector internal telemetry
+      - "9090:9090"   # Metrics pipeline output (optional Prometheus scrape)
       - "13133:13133" # Health check
     volumes:
       - ./otel-collector/config.yaml:/etc/otelcol-contrib/config.yaml:ro
     command: [ "--config=/etc/otelcol-contrib/config.yaml" ]
 
-  # ============ PROMETHEUS (scrapes OTEL Collector metrics) ============
-  prometheus:
-    image: prom/prometheus:v2.47.0
-    container_name: prometheus
+  # ============ OTEL COLLECTOR AGENT (OTLP -> Kafka) ============
+  otel-agent:
+    image: otel/opentelemetry-collector-contrib:0.91.0
+    container_name: otel-agent
     depends_on:
-      - otel-collector
+      kafka:
+        condition: service_healthy
     ports:
-      - "9091:9090" # 9091 on host to avoid conflict with collector's 9090
+      - "4317:4317" # OTLP gRPC for SDKs
+      - "4318:4318" # OTLP HTTP (optional)
+      - "13134:13133" # Separate health check port on host
     volumes:
-      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
-      - prometheus-data:/prometheus
-    command:
-      - "--config.file=/etc/prometheus/prometheus.yml"
-      - "--storage.tsdb.path=/prometheus"
-      - "--web.enable-lifecycle"
-    healthcheck:
-      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:9090/-/healthy"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
+      - ./otel-collector/agent-config.yaml:/etc/otelcol-contrib/config.yaml:ro
+    command: [ "--config=/etc/otelcol-contrib/config.yaml" ]
 
   # ============ KAFKA UI ============
   kafka-ui:
@@ -168,23 +137,76 @@ services:
       KAFKA_CLUSTERS_0_NAME: local
       KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:29092
 
-  # ============ JAEGER ============
-  jaeger:
-    image: jaegertracing/all-in-one:1.50
-    container_name: jaeger
+  # ============ LOKI ============
+  loki:
+    image: grafana/loki:3.0.0
+    container_name: loki
+    command: -config.file=/etc/loki/loki-config.yaml
+    volumes:
+      - ./loki/loki-config.yaml:/etc/loki/loki-config.yaml:ro
+      - loki-data:/loki
     ports:
-      - "16686:16686" # Web UI
-      - "14268:14268" # Thrift HTTP
-      - "14250:14250" # OTLP gRPC (used by collector)
-    environment:
-      - COLLECTOR_OTLP_ENABLED=true
+      - "3100:3100"
     healthcheck:
-      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:14269/"]
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:3100/ready || exit 1"]
       interval: 10s
       timeout: 5s
-      retries: 5
+      retries: 10
+
+  # ============ TEMPO ============
+  tempo:
+    image: grafana/tempo:2.3.0
+    container_name: tempo
+    command: -config.file=/etc/tempo/tempo-config.yaml
+    volumes:
+      - ./tempo/tempo-config.yaml:/etc/tempo/tempo-config.yaml:ro
+      - tempo-data:/var/tempo
+    ports:
+      - "3200:3200"   # Tempo query endpoint
+      - "4417:4317"   # OTLP gRPC (from gateway/agents)
+      - "4418:4318"   # OTLP HTTP (optional)
+
+  # ============ MIMIR ============
+  mimir:
+    image: grafana/mimir:2.12.0
+    container_name: mimir
+    command: ["-config.file=/etc/mimir/mimir-config.yaml", "-target=all"]
+    volumes:
+      - ./mimir/mimir-config.yaml:/etc/mimir/mimir-config.yaml:ro
+      - mimir-data:/var/mimir
+    ports:
+      - "9009:9009"
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:9009/ready || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  # ============ GRAFANA ============
+  grafana:
+    image: grafana/grafana:10.4.0
+    container_name: grafana
+    depends_on:
+      loki:
+        condition: service_healthy
+      tempo:
+        condition: service_started
+      mimir:
+        condition: service_healthy
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+    volumes:
+      - ./grafana/provisioning/datasources:/etc/grafana/provisioning/datasources:ro
+      - grafana-data:/var/lib/grafana
 
 volumes:
-  elasticsearch-data:
   vector-data:
-  prometheus-data:
+  vector-agent-data:
+  loki-data:
+  tempo-data:
+  mimir-data:
+  grafana-data:
+

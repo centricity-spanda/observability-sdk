@@ -19,64 +19,41 @@ transforms:
     inputs:
       - "kafka_logs"
     source: |
-      # Timestamp handling
-      if exists(.timestamp) {
-        ts, err = parse_timestamp(.timestamp, format: "%+")
-        if err == null {
-          .@timestamp = ts
-        } else {
-          .@timestamp = now()
-        }
+      # docker_logs sends the raw line in .message (e.g. "2026-02-25 16:39:57.372 | {\"timestamp\":...}").
+      # Extract the JSON part and replace the event with the parsed envelope so labels work.
+      json_str = string(.message) ?? ""
+      if contains(json_str, " | ") {
+        parts = split(json_str, " | ", limit: 2)
+        json_str = string(parts[1]) ?? json_str
+      }
+      parsed, err = parse_json(json_str)
+      if err == null && is_object(parsed) {
+        . = parsed
+      }
+      # Extract label values from the structured log envelope
+      if is_object(.service) {
+        .label_service = string(.service."service.name") ?? "unknown"
+        .label_environment = string(.service."deployment.environment") ?? "unknown"
       } else {
-        .@timestamp = now()
+        .label_service = string(.service) ?? "unknown"
+        .label_environment = string(.environment) ?? "unknown"
       }
-
-      # Vector metadata
-      .pipeline = "vector"
-      .ingested_at = now()
-
-      # Required fields with defaults
-      if !exists(.service) || is_null(.service) {
-        .service = "unknown"
-      }
-      if !exists(.level) || is_null(.level) {
-        .level = "info"
-      }
-      if !exists(.environment) || is_null(.environment) {
-        .environment = "unknown"
-      }
-
-  route_logs:
-    type: "remap"
-    inputs:
-      - "parse_logs"
-    source: |
-      # Daily index pattern
-      .index = "logs-" + format_timestamp!(.@timestamp, format: "%Y.%m.%d")
+      .label_severity = string(.severity) ?? string(.level) ?? "info"
 
 sinks:
-  elasticsearch_logs:
-    type: "elasticsearch"
+  loki:
+    type: "loki"
     inputs:
-      - "route_logs"
-    endpoints:
-      - "http://elasticsearch:9200"
-    api_version: "v8"
-    mode: "bulk"
-    bulk:
-      index: "{{ index }}"
-    buffer:
-      type: "disk"
-      max_size: 10737418240 # 10GB
-      when_full: "block"
-    healthcheck: true
-
-  console_debug:
-    type: "console"
-    inputs:
-      - "route_logs"
+      - "parse_logs"
+    endpoint: "http://loki:3100"
     encoding:
       codec: "json"
+    labels:
+      service: "{{ label_service }}"
+      severity: "{{ label_severity }}"
+      environment: "{{ label_environment }}"
+    remove_label_fields: true
+    out_of_order_action: "accept"
 
 api:
   enabled: true
