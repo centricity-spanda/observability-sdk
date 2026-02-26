@@ -1,0 +1,166 @@
+apiVersion: 1
+
+contactPoints:
+  - orgId: 1
+    name: grafana-default-email
+    receivers:
+      - uid: default-email
+        type: email
+        disableResolveMessage: false
+        settings:
+          # Comma-separated if multiple recipients
+          addresses: "spanda@centricity.co.in"
+
+policies:
+  - orgId: 1
+    receiver: grafana-default-email
+    group_by: ["alertname", "service"]
+    group_wait: 30s
+    group_interval: 30s
+    repeat_interval: 4h
+
+groups:
+  - orgId: 1
+    name: observability-service-alerts
+    folder: Observability
+    interval: 30s
+    rules:
+      - uid: high-error-rate
+        title: High Error Rate
+        condition: A
+        for: 1m
+        noDataState: OK
+        execErrState: Alerting
+        annotations:
+          summary: "High error rate on service"
+          description: "Error rate is above 5% for at least 1 minute."
+        labels:
+          severity: critical
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 300
+              to: 0
+            datasourceUid: mimir
+            model:
+              refId: A
+              datasource:
+                type: prometheus
+                uid: mimir
+              expr: 'sum(rate(http_requests_total{status=~"5.."}[5m])) / sum(rate(http_requests_total[5m])) > 0.05'
+              instant: true
+              range: false
+              intervalMs: 1000
+              maxDataPoints: 43200
+
+      - uid: high-p99-latency
+        title: High P99 Latency
+        condition: A
+        for: 2m
+        noDataState: OK
+        execErrState: Alerting
+        annotations:
+          summary: "P99 latency is very high"
+          description: "P99 request duration is above 2 seconds for at least 2 minutes."
+        labels:
+          severity: warning
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 300
+              to: 0
+            datasourceUid: mimir
+            model:
+              refId: A
+              datasource:
+                type: prometheus
+                uid: mimir
+              expr: "histogram_quantile(0.99, sum(rate(http_request_duration_seconds_bucket[5m])) by (le)) > 2"
+              instant: true
+              range: false
+              intervalMs: 1000
+              maxDataPoints: 43200
+
+      - uid: large-request-payload
+        title: Large Request Payload
+        condition: A
+        for: 30s
+        noDataState: OK
+        execErrState: Alerting
+        annotations:
+          summary: "Very large request payload detected"
+          description: "P99 request size is above 1MB (possible system choking)."
+        labels:
+          severity: critical
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 120
+              to: 0
+            datasourceUid: mimir
+            model:
+              refId: A
+              datasource:
+                type: prometheus
+                uid: mimir
+              expr: "histogram_quantile(0.99, sum(rate(http_request_size_bytes_bucket[5m])) by (le)) > 1048576"
+              instant: true
+              range: false
+              intervalMs: 1000
+              maxDataPoints: 43200
+
+      - uid: high-in-flight-requests
+        title: High In-Flight Requests
+        condition: A
+        for: 1m
+        noDataState: OK
+        execErrState: Alerting
+        annotations:
+          summary: "Too many requests in flight"
+          description: "In-flight requests are above 50 for at least 1 minute."
+        labels:
+          severity: warning
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 300
+              to: 0
+            datasourceUid: mimir
+            model:
+              refId: A
+              datasource:
+                type: prometheus
+                uid: mimir
+              expr: "sum(http_requests_in_flight) > 50"
+              instant: true
+              range: false
+              intervalMs: 1000
+              maxDataPoints: 43200
+
+      - uid: kafka-producer-failures
+        title: Kafka Producer Failures
+        condition: A
+        for: 1m
+        noDataState: OK
+        execErrState: Alerting
+        annotations:
+          summary: "Kafka producer is reporting errors"
+          description: "At least one Kafka producer error in the last minute."
+        labels:
+          severity: critical
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 300
+              to: 0
+            datasourceUid: mimir
+            model:
+              refId: A
+              datasource:
+                type: prometheus
+                uid: mimir
+              expr: 'rate(kafka_producer_messages_total{status="error"}[5m]) > 0'
+              instant: true
+              range: false
+              intervalMs: 1000
+              maxDataPoints: 43200

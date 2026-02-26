@@ -7,6 +7,8 @@ from observability.metrics.registry import (
     http_requests_total,
     http_request_duration_seconds,
     http_requests_in_flight,
+    http_request_size_bytes,
+    http_response_size_bytes,
 )
 
 
@@ -27,11 +29,26 @@ class HTTPMetricsMiddleware:
         
         start_time = time.perf_counter()
         status_code = 500  # Default in case of error
+        response_body_bytes = 0
+        
+        # Request size from Content-Length header
+        request_size = 0
+        for name, value in scope.get("headers", []):
+            if name.lower() == b"content-length":
+                try:
+                    request_size = int(value.decode("ascii").strip())
+                except (ValueError, UnicodeDecodeError):
+                    pass
+                break
         
         async def send_wrapper(message):
-            nonlocal status_code
+            nonlocal status_code, response_body_bytes
             if message["type"] == "http.response.start":
                 status_code = message["status"]
+            elif message["type"] == "http.response.body":
+                body = message.get("body", b"")
+                if body:
+                    response_body_bytes += len(body)
             await send(message)
         
         try:
@@ -40,20 +57,32 @@ class HTTPMetricsMiddleware:
             # Record metrics
             duration = time.perf_counter() - start_time
             method = scope.get("method", "GET")
-            path = scope.get("path", "/")
+            path = self._normalize_path(scope.get("path", "/"))
+            path_label = path
             
             http_requests_total.labels(
                 service=self.service_name,
                 method=method,
-                path=self._normalize_path(path),
+                path=path_label,
                 status=str(status_code),
             ).inc()
             
             http_request_duration_seconds.labels(
                 service=self.service_name,
                 method=method,
-                path=self._normalize_path(path),
+                path=path_label,
             ).observe(duration)
+            
+            http_request_size_bytes.labels(
+                service=self.service_name,
+                method=method,
+                path=path_label,
+            ).observe(request_size)
+            http_response_size_bytes.labels(
+                service=self.service_name,
+                method=method,
+                path=path_label,
+            ).observe(response_body_bytes)
             
             http_requests_in_flight.labels(service=self.service_name).dec()
     

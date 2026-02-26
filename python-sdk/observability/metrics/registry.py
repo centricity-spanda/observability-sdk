@@ -33,6 +33,22 @@ http_requests_in_flight = Gauge(
     registry=Registry,
 )
 
+http_request_size_bytes = Histogram(
+    "http_request_size_bytes",
+    "Size of HTTP request bodies in bytes",
+    ["service", "method", "path"],
+    buckets=[100, 1_000, 10_000, 100_000, 500_000, 1_000_000, 5_000_000, 10_000_000],
+    registry=Registry,
+)
+
+http_response_size_bytes = Histogram(
+    "http_response_size_bytes",
+    "Size of HTTP response bodies in bytes",
+    ["service", "method", "path"],
+    buckets=[100, 1_000, 10_000, 100_000, 500_000, 1_000_000, 5_000_000, 10_000_000],
+    registry=Registry,
+)
+
 # Kafka producer metrics
 kafka_producer_messages_total = Counter(
     "kafka_producer_messages_total",

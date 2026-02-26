@@ -4,9 +4,12 @@ Single init: one logger, one tracer, one metrics pusher; use get_logger()/get_tr
 """
 
 import asyncio
+import time
 from contextlib import asynccontextmanager
+from typing import Any
 
 from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -124,6 +127,41 @@ async def get_user_profile_nested(request: Request):
     
     return {"user_id": "USR-001", "name": "John Doe"}
 
+
+@app.post("/api/large-payload")
+async def large_payload(request: Request) -> dict[str, Any]:
+    """Accept arbitrary JSON body; log payload size and return summary. Use to demo large-payload alerts."""
+    body = await request.body()
+    size = len(body)
+    get_logger().info("large_payload received", size_bytes=size, trace_id=get_trace_id())
+    return {"received_bytes": size, "message": "payload accepted"}
+
+
+@app.post("/api/error")
+async def trigger_error(count: int = 1) -> JSONResponse:
+    """Return 500 on demand to demo error-rate alerting. Call repeatedly (or use ?count=N) to trigger alert."""
+    get_logger().warning("trigger_error invoked", count=count, trace_id=get_trace_id())
+    return JSONResponse(status_code=500, content={"error": "demo error", "count": count})
+
+
+@app.post("/api/stress")
+async def stress(
+    duration_ms: int = 2000,
+    memory_mb: int = 50,
+) -> dict[str, Any]:
+    """Simulate CPU/memory pressure to demo latency alerts. duration_ms: busy-wait; memory_mb: allocate bytes."""
+    logger = get_logger()
+    logger.info("stress started", duration_ms=duration_ms, memory_mb=memory_mb, trace_id=get_trace_id())
+    start = time.perf_counter()
+    # CPU burn
+    deadline = start + (duration_ms / 1000.0)
+    while time.perf_counter() < deadline:
+        pass
+    # Optional memory allocation (hold briefly)
+    chunk = b"x" * (memory_mb * 1024 * 1024) if memory_mb > 0 else b""
+    elapsed = time.perf_counter() - start
+    logger.info("stress completed", elapsed_seconds=round(elapsed, 2), trace_id=get_trace_id())
+    return {"duration_ms": duration_ms, "memory_mb": memory_mb, "elapsed_seconds": round(elapsed, 2)}
 
 
 if __name__ == "__main__":
