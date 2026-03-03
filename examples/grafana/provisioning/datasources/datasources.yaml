@@ -24,10 +24,14 @@ datasources:
     access: proxy
     url: http://tempo:3200
     jsonData:
-      tracesToLogs:
+      tracesToLogsV2:
         datasourceUid: loki
-        tags: ["service.name", "trace_id"]
-        mappedTags:
+        spanStartTimeShift: '-1h'
+        spanEndTimeShift: '1h'
+        filterByTraceID: true
+        filterBySpanID: false
+        customQuery: false
+        tags:
           - key: service.name
             value: service
       tracesToMetrics:
