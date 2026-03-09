@@ -11,6 +11,25 @@ contactPoints:
           # Comma-separated if multiple recipients
           addresses: "spanda@centricity.co.in"
 
+  # Example per-service contact points. Adjust addresses as needed per team/service.
+  - orgId: 1
+    name: order-service-email
+    receivers:
+      - uid: order-service-email
+        type: email
+        disableResolveMessage: false
+        settings:
+          addresses: "order-team@centricity.co.in"
+
+  - orgId: 1
+    name: payment-service-email
+    receivers:
+      - uid: payment-service-email
+        type: email
+        disableResolveMessage: false
+        settings:
+          addresses: "payment-team@centricity.co.in"
+
 policies:
   - orgId: 1
     receiver: grafana-default-email
@@ -18,6 +37,13 @@ policies:
     group_wait: 30s
     group_interval: 30s
     repeat_interval: 4h
+    routes:
+      - receiver: order-service-email
+        matchers:
+          - service = order-service
+      - receiver: payment-service-email
+        matchers:
+          - service = payment-service
 
 groups:
   - orgId: 1

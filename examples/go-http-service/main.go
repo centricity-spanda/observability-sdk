@@ -4,9 +4,12 @@ package main
 
 import (
 	"context"
+	"encoding/json"
+	"io"
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -32,11 +35,19 @@ func main() {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte(`{"status":"healthy"}`))
 	})
 
 	mux.HandleFunc("/api/payment", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
 		ctx := r.Context()
 		logger.Info("processing payment",
 			zap.String("trace_id", observability.GetTraceIDFromContext(ctx)),
@@ -50,6 +61,10 @@ func main() {
 	})
 
 	mux.HandleFunc("/api/users", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
 		ctx := r.Context()
 		logger.Info("user profile accessed",
 			zap.String("trace_id", observability.GetTraceIDFromContext(ctx)),
@@ -89,6 +104,119 @@ func main() {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte(`{"user_id":"USR-001","name":"John Doe"}`))
+	})
+
+	// Large payload endpoint - mirrors Python /api/large-payload
+	mux.HandleFunc("/api/large-payload", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			logger.Error("failed to read request body", zap.Error(err))
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		size := len(body)
+		ctx := r.Context()
+		logger.Info("large_payload received",
+			zap.Int("size_bytes", size),
+			zap.String("trace_id", observability.GetTraceIDFromContext(ctx)),
+		)
+
+		w.Header().Set("Content-Type", "application/json")
+		resp := map[string]interface{}{
+			"received_bytes": size,
+			"message":        "payload accepted",
+		}
+		_ = json.NewEncoder(w).Encode(resp)
+	})
+
+	// Error endpoint - mirrors Python /api/error
+	mux.HandleFunc("/api/error", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		countStr := r.URL.Query().Get("count")
+		count := 1
+		if countStr != "" {
+			if v, err := strconv.Atoi(countStr); err == nil && v > 0 {
+				count = v
+			}
+		}
+		ctx := r.Context()
+		logger.Warn("trigger_error invoked",
+			zap.Int("count", count),
+			zap.String("trace_id", observability.GetTraceIDFromContext(ctx)),
+		)
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		resp := map[string]interface{}{
+			"error": "demo error",
+			"count": count,
+		}
+		_ = json.NewEncoder(w).Encode(resp)
+	})
+
+	// Stress endpoint - mirrors Python /api/stress
+	mux.HandleFunc("/api/stress", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+
+		// Query params: duration_ms (default 2000), memory_mb (default 50)
+		durationMS := 2000
+		memoryMB := 50
+
+		if v := r.URL.Query().Get("duration_ms"); v != "" {
+			if parsed, err := strconv.Atoi(v); err == nil && parsed > 0 {
+				durationMS = parsed
+			}
+		}
+		if v := r.URL.Query().Get("memory_mb"); v != "" {
+			if parsed, err := strconv.Atoi(v); err == nil && parsed >= 0 {
+				memoryMB = parsed
+			}
+		}
+
+		ctx := r.Context()
+		logger.Info("stress started",
+			zap.Int("duration_ms", durationMS),
+			zap.Int("memory_mb", memoryMB),
+			zap.String("trace_id", observability.GetTraceIDFromContext(ctx)),
+		)
+
+		start := time.Now()
+
+		// CPU burn: busy-wait for the specified duration
+		deadline := start.Add(time.Duration(durationMS) * time.Millisecond)
+		for time.Now().Before(deadline) {
+		}
+
+		// Optional memory allocation (hold briefly)
+		var chunk []byte
+		if memoryMB > 0 {
+			chunk = make([]byte, memoryMB*1024*1024)
+			_ = chunk
+		}
+
+		elapsed := time.Since(start).Seconds()
+		logger.Info("stress completed",
+			zap.Float64("elapsed_seconds", elapsed),
+			zap.String("trace_id", observability.GetTraceIDFromContext(ctx)),
+		)
+
+		w.Header().Set("Content-Type", "application/json")
+		resp := map[string]interface{}{
+			"duration_ms":     durationMS,
+			"memory_mb":       memoryMB,
+			"elapsed_seconds": elapsed,
+		}
+		_ = json.NewEncoder(w).Encode(resp)
 	})
 
 	handler := obs.HTTPTracingMiddleware(observability.ServiceName())(

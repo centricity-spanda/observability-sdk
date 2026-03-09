@@ -7,81 +7,84 @@ import (
 	"sync"
 	"time"
 
-	"github.com/IBM/sarama"
 	"github.com/prometheus/client_golang/prometheus"
 	dto "github.com/prometheus/client_model/go"
 	"go.opentelemetry.io/proto/otlp/collector/metrics/v1"
 	commonpb "go.opentelemetry.io/proto/otlp/common/v1"
 	metricspb "go.opentelemetry.io/proto/otlp/metrics/v1"
 	resourcepb "go.opentelemetry.io/proto/otlp/resource/v1"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/protobuf/proto"
 )
 
-// Pusher pushes metrics to Kafka periodically
+// Pusher pushes metrics to an OTEL collector via OTLP gRPC periodically.
 type Pusher struct {
-	producer    sarama.SyncProducer
+	conn        *grpc.ClientConn
+	client      v1.MetricsServiceClient
 	registry    *prometheus.Registry
 	serviceName string
-	topic       string
+	endpoint    string
 	interval    time.Duration
 	cancel      context.CancelFunc
 	wg          sync.WaitGroup
 }
 
-// PusherConfig holds pusher configuration
+// PusherConfig holds pusher configuration.
 type PusherConfig struct {
-	ServiceName  string
-	KafkaBrokers []string
-	Topic        string
-	Interval     time.Duration
-	EnableKafka  bool
+	ServiceName string
+	Endpoint    string
+	Interval    time.Duration
 }
 
-// NewPusherConfig creates config from environment
+// NewPusherConfig creates config from environment (mirrors Python metrics pusher).
 func NewPusherConfig(serviceName string) *PusherConfig {
-	interval, _ := time.ParseDuration(getEnv("METRICS_PUSH_INTERVAL", "15s"))
+	intervalStr := getEnv("METRICS_PUSH_INTERVAL", "15s")
+	interval, err := time.ParseDuration(intervalStr)
+	if err != nil {
+		interval = 15 * time.Second
+	}
 
-	cfg := &PusherConfig{
+	endpoint := getEnv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:4317")
+	// Strip scheme if present (e.g. http://host:4317 -> host:4317)
+	if strings.Contains(endpoint, "://") {
+		parts := strings.SplitN(endpoint, "://", 2)
+		if len(parts) == 2 {
+			endpoint = parts[1]
+		}
+	}
+
+	return &PusherConfig{
 		ServiceName: serviceName,
-		Topic:       getEnv("KAFKA_METRICS_TOPIC", "metrics.application"),
+		Endpoint:    endpoint,
 		Interval:    interval,
-		EnableKafka: getEnvBool("METRICS_KAFKA_ENABLED", true),
 	}
-
-	brokers := getEnv("KAFKA_BROKERS", "")
-	if brokers != "" {
-		cfg.KafkaBrokers = strings.Split(brokers, ",")
-	}
-
-	return cfg
 }
 
-// NewPusher creates a new metrics pusher
+// NewPusher creates a new metrics pusher backed by OTLP gRPC.
 func NewPusher(cfg *PusherConfig) (*Pusher, error) {
-	if len(cfg.KafkaBrokers) == 0 {
-		return nil, nil // No Kafka, metrics exposed via /metrics only
+	if cfg.Endpoint == "" {
+		return nil, nil
 	}
 
-	saramaConfig := sarama.NewConfig()
-	saramaConfig.Producer.RequiredAcks = sarama.WaitForLocal
-	saramaConfig.Producer.Compression = sarama.CompressionSnappy
-	saramaConfig.Producer.Return.Successes = true
-
-	producer, err := sarama.NewSyncProducer(cfg.KafkaBrokers, saramaConfig)
+	conn, err := grpc.NewClient(cfg.Endpoint, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
 		return nil, err
 	}
 
+	client := v1.NewMetricsServiceClient(conn)
+
 	return &Pusher{
-		producer:    producer,
+		conn:        conn,
+		client:      client,
 		registry:    Registry,
 		serviceName: cfg.ServiceName,
-		topic:       cfg.Topic,
+		endpoint:    cfg.Endpoint,
 		interval:    cfg.Interval,
 	}, nil
 }
 
-// Start begins the background push loop
+// Start begins the background push loop.
 func (p *Pusher) Start() {
 	ctx, cancel := context.WithCancel(context.Background())
 	p.cancel = cancel
@@ -90,13 +93,16 @@ func (p *Pusher) Start() {
 	go p.pushLoop(ctx)
 }
 
-// Stop gracefully stops the pusher
+// Stop gracefully stops the pusher and closes the gRPC connection.
 func (p *Pusher) Stop() error {
 	if p.cancel != nil {
 		p.cancel()
 	}
 	p.wg.Wait()
-	return p.producer.Close()
+	if p.conn != nil {
+		return p.conn.Close()
+	}
+	return nil
 }
 
 func (p *Pusher) pushLoop(ctx context.Context) {
@@ -118,6 +124,10 @@ func (p *Pusher) pushLoop(ctx context.Context) {
 }
 
 func (p *Pusher) push() {
+	if p.client == nil {
+		return
+	}
+
 	// Gather metrics from Prometheus registry
 	mfs, err := p.registry.Gather()
 	if err != nil {
@@ -131,26 +141,18 @@ func (p *Pusher) push() {
 		return
 	}
 
-	// Marshal to protobuf
-	data, err := proto.Marshal(otlpMetrics)
+	// Marshal for debugging/logging if needed (not required for gRPC call)
+	_, err = proto.Marshal(otlpMetrics)
 	if err != nil {
 		os.Stderr.WriteString("Failed to marshal OTLP metrics: " + err.Error() + "\n")
 		return
 	}
 
-	// Send to Kafka
-	msg := &sarama.ProducerMessage{
-		Topic:     p.topic,
-		Key:       sarama.StringEncoder(p.serviceName),
-		Value:     sarama.ByteEncoder(data),
-		Timestamp: time.Now(),
-	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
 
-	if _, _, err := p.producer.SendMessage(msg); err != nil {
-		os.Stderr.WriteString("Failed to push metrics to Kafka: " + err.Error() + "\n")
-		KafkaProducerMessagesTotal.WithLabelValues(p.serviceName, p.topic, "error").Inc()
-	} else {
-		KafkaProducerMessagesTotal.WithLabelValues(p.serviceName, p.topic, "success").Inc()
+	if _, err := p.client.Export(ctx, otlpMetrics); err != nil {
+		os.Stderr.WriteString("Failed to push metrics via OTLP: " + err.Error() + "\n")
 	}
 }
 

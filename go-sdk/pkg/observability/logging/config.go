@@ -12,11 +12,26 @@ type Config struct {
 	// ServiceName identifies the service in logs
 	ServiceName string
 
+	// ServiceNamespace is the logical namespace of the service (e.g. "broking")
+	ServiceNamespace string
+
 	// Environment is the deployment environment (production, staging, development)
 	Environment string
 
 	// ServiceVersion is the version of the service
 	ServiceVersion string
+
+	// HostName is the host name where the service is running (optional)
+	HostName string
+
+	// K8sPodName is the Kubernetes pod name (optional)
+	K8sPodName string
+
+	// K8sNamespaceName is the Kubernetes namespace name (optional)
+	K8sNamespaceName string
+
+	// K8sNodeName is the Kubernetes node name (optional)
+	K8sNodeName string
 
 	// KafkaBrokers is a comma-separated list of Kafka broker addresses
 	KafkaBrokers []string
@@ -50,16 +65,25 @@ type Config struct {
 
 	// EnableConsole enables/disables console (stdout) logging
 	EnableConsole bool
+
 	// EnableFallback enables file fallback when Kafka fails (with auto-replay)
 	EnableFallback bool
+
+	// Team is the owning team for the service (used in log attributes)
+	Team string
 }
 
 // NewConfig creates a Config from environment variables
 func NewConfig(serviceName string) *Config {
 	cfg := &Config{
 		ServiceName:        serviceName,
+		ServiceNamespace:   getEnv("SERVICE_NAMESPACE", "default"),
 		Environment:        getEnv("ENVIRONMENT", "production"),
 		ServiceVersion:     getEnv("SERVICE_VERSION", "unknown"),
+		HostName:           getEnv("HOST_NAME", os.Getenv("HOSTNAME")),
+		K8sPodName:         getEnv("K8S_POD_NAME", ""),
+		K8sNamespaceName:   getEnv("K8S_NAMESPACE_NAME", ""),
+		K8sNodeName:        getEnv("K8S_NODE_NAME", ""),
 		LogTopic:           getEnv("KAFKA_LOG_TOPIC", "logs.application"),
 		LogLevel:           getEnv("LOG_LEVEL", "info"),
 		LogType:            getEnv("LOG_TYPE", "standard"),
@@ -71,6 +95,7 @@ func NewConfig(serviceName string) *Config {
 		EnablePIIRedaction: getEnvBool("LOG_PII_REDACTION_ENABLED", true),
 		EnableConsole:      getEnvBool("LOG_CONSOLE_ENABLED", true),
 		EnableFallback:     getEnvBool("LOG_KAFKA_FALLBACK_ENABLED", true),
+		Team:               getEnv("SERVICE_TEAM", ""),
 	}
 
 	// Parse Kafka brokers

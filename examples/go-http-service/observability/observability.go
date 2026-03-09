@@ -31,14 +31,8 @@ func Initialize(svcName string) error {
 		if initErr != nil {
 			return
 		}
-		if err := obs.StartMetricsPusher(svcName); err != nil {
-			logger.Warn("failed to start metrics pusher", zap.Error(err))
-		}
-		tracer, tracerProvider, initErr = obs.NewTracer(svcName)
-		if initErr != nil {
-			logger.Warn("failed to initialize tracer", zap.Error(initErr))
-			initErr = nil // non-fatal; continue without tracer
-		}
+		_ = obs.StartMetricsPusher(svcName)
+		tracer, tracerProvider, _ = obs.NewTracer(svcName)
 	})
 	return initErr
 }
