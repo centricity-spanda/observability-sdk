@@ -1,0 +1,20 @@
+version: '3.8'
+
+services:
+  python-fastapi-service:
+    container_name: python-fastapi-service
+    build:
+      context: ../..
+      dockerfile: examples/python-fastapi-service/Dockerfile
+    ports:
+      - "8081:8081"
+    env_file:
+      - .env
+    environment:
+      # Reach the OTEL agent running in the infra stack (examples/docker-compose.yml)
+      # via the host's mapped port 4317.
+      OTEL_EXPORTER_OTLP_ENDPOINT: "http://host.docker.internal:4317"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+

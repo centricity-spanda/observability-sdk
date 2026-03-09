@@ -10,13 +10,13 @@ var pusher *Pusher
 func StartMetricsPusher(serviceName string) error {
 	cfg := NewPusherConfig(serviceName)
 
-	// In development mode, don't push to Kafka
+	// In development mode, don't push to collector
 	if getEnv("ENVIRONMENT", "production") == "development" {
 		return nil
 	}
 
-	// Check if Kafka export is enabled
-	if !cfg.EnableKafka {
+	// If no OTLP endpoint is configured, skip pushing
+	if cfg.Endpoint == "" {
 		return nil
 	}
 

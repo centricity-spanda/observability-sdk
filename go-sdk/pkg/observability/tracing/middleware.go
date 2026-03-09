@@ -13,10 +13,12 @@ import (
 
 // HTTPTracingMiddleware creates middleware that adds distributed tracing to HTTP handlers
 func HTTPTracingMiddleware(serviceName string) func(http.Handler) http.Handler {
-	tracer := otel.Tracer(serviceName)
-
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			// Resolve tracer on every request so it always reflects the current global
+			// TracerProvider, even if it was set after the middleware was constructed.
+			tracer := otel.Tracer(serviceName)
+
 			// Extract trace context from incoming request
 			ctx := otel.GetTextMapPropagator().Extract(r.Context(), propagation.HeaderCarrier(r.Header))
 

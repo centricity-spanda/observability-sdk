@@ -1,6 +1,3 @@
-# OpenTelemetry Collector Configuration
-# Consumes traces and metrics from Kafka and exports to Elasticsearch
-
 receivers:
   # Kafka receiver for traces
   kafka/traces:
@@ -19,14 +16,6 @@ receivers:
     group_id: otel-metrics
     encoding: otlp_proto
     initial_offset: earliest
-
-  # OTLP receiver for direct ingestion (optional)
-  otlp:
-    protocols:
-      grpc:
-        endpoint: 0.0.0.0:4317
-      http:
-        endpoint: 0.0.0.0:4318
 
 processors:
   # Batch processor for efficiency
@@ -52,23 +41,9 @@ processors:
         action: insert
 
 exporters:
-  # Elasticsearch exporter for traces
-  elasticsearch/traces:
-    endpoints:
-      - http://elasticsearch:9200
-    traces_index: traces
-    sending_queue:
-      enabled: true
-      num_consumers: 10
-    retry:
-      enabled: true
-      initial_interval: 1s
-      max_interval: 30s
-
-  # Jaeger exporter for trace visualization
-  # Jaeger exporter via OTLP
-  otlp/jaeger:
-    endpoint: jaeger:4317
+  # Tempo exporter for traces
+  otlp/tempo:
+    endpoint: tempo:4317
     tls:
       insecure: true
 
@@ -78,9 +53,9 @@ exporters:
     sampling_initial: 5
     sampling_thereafter: 200
 
-  # Prometheus exporter for self-monitoring
-  prometheus:
-    endpoint: 0.0.0.0:9090 # ← Changed from 8888 to avoid conflict
+  # Prometheus remote write exporter to Mimir
+  prometheusremotewrite/mimir:
+    endpoint: http://mimir:9009/api/v1/push
 
 
 extensions:
@@ -101,14 +76,14 @@ service:
 
   pipelines:
     traces:
-      receivers: [kafka/traces, otlp]
+      receivers: [kafka/traces]
       processors: [memory_limiter, batch, resource]
-      exporters: [elasticsearch/traces, otlp/jaeger, debug]
+      exporters: [otlp/tempo, debug]
 
     metrics:
-      receivers: [kafka/metrics, otlp]
+      receivers: [kafka/metrics]
       processors: [memory_limiter, batch, resource]
-      exporters: [debug, prometheus]
+      exporters: [debug, prometheusremotewrite/mimir]
 
 
   telemetry:

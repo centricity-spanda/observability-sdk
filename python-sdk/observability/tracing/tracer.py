@@ -9,15 +9,14 @@ from opentelemetry.sdk.resources import Resource, SERVICE_NAME, SERVICE_VERSION
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor
 from opentelemetry.sdk.trace.sampling import ParentBasedTraceIdRatio
-
-from observability.tracing.kafka_exporter import KafkaSpanExporter
+from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
 
 
 _tracer_provider: Optional[TracerProvider] = None
 
 
 def new_tracer(service_name: str) -> trace.Tracer:
-    """Create a new OpenTelemetry tracer with Kafka exporter.
+    """Create a new OpenTelemetry tracer with OTLP exporter.
     
     Args:
         service_name: The name of the service for trace identification.
@@ -50,19 +49,11 @@ def new_tracer(service_name: str) -> trace.Tracer:
         sampler=ParentBasedTraceIdRatio(sampling_rate),
     )
     
-    # Add Kafka exporter if not in development mode and enabled
-    enable_kafka = os.getenv("TRACES_KAFKA_ENABLED", "true").lower() in ("true", "1", "yes")
-    
-    if environment != "development" and enable_kafka:
-        brokers = os.getenv("KAFKA_BROKERS", "")
-        if brokers:
-            kafka_brokers = [b.strip() for b in brokers.split(",")]
-            topic = os.getenv("KAFKA_TRACES_TOPIC", "traces.application")
-            
-            exporter = KafkaSpanExporter(service_name, kafka_brokers, topic)
-            _tracer_provider.add_span_processor(BatchSpanProcessor(exporter))
-        else:
-            sys.stderr.write("Warning: KAFKA_BROKERS not set, trace export disabled\n")
+    # Configure OTLP span exporter (sends to OTEL collector agent).
+    # Endpoint must be a full URL (e.g. http://host:4317); do not strip scheme.
+    endpoint = os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:4317")
+    exporter = OTLPSpanExporter(endpoint=endpoint)
+    _tracer_provider.add_span_processor(BatchSpanProcessor(exporter))
     
     # Set as global provider
     trace.set_tracer_provider(_tracer_provider)

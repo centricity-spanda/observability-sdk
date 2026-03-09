@@ -2,10 +2,12 @@ package tracing
 
 import (
 	"context"
-	"os"
 	"strconv"
+	"strings"
+	"time"
 
 	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc"
 	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/sdk/resource"
 	"go.opentelemetry.io/otel/sdk/trace"
@@ -18,26 +20,17 @@ type TracerProvider struct {
 	*trace.TracerProvider
 }
 
-// NewTracer creates a new OpenTelemetry tracer with Kafka exporter.
-// It returns the tracer instance (for creating spans), the TracerProvider (for shutdown), and any error.
+// NewTracer creates a new OpenTelemetry tracer with OTLP gRPC exporter (to the OTEL agent).
 func NewTracer(serviceName string) (apitrace.Tracer, *TracerProvider, error) {
-	cfg := NewExporterConfig(serviceName)
-
-	// Create resource with service info
-	res, err := resource.Merge(
-		resource.Default(),
-		resource.NewWithAttributes(
-			semconv.SchemaURL,
-			semconv.ServiceName(serviceName),
-			semconv.ServiceVersion(getEnv("SERVICE_VERSION", "unknown")),
-			semconv.DeploymentEnvironment(getEnv("ENVIRONMENT", "production")),
-		),
+	// Build resource without merging resource.Default() to avoid schema URL
+	// conflicts (SDK ships v1.40.0 schema, semconv/v1.21.0 has a different URL).
+	res := resource.NewWithAttributes(
+		semconv.SchemaURL,
+		semconv.ServiceName(serviceName),
+		semconv.ServiceVersion(getEnv("SERVICE_VERSION", "unknown")),
+		semconv.DeploymentEnvironment(getEnv("ENVIRONMENT", "production")),
 	)
-	if err != nil {
-		return nil, nil, err
-	}
 
-	// Parse sampling rate (default to 1.0 if not set or invalid)
 	samplingRate := 1.0
 	if rate := getEnv("TRACE_SAMPLING_RATE", ""); rate != "" {
 		if parsed, err := strconv.ParseFloat(rate, 64); err == nil {
@@ -45,45 +38,34 @@ func NewTracer(serviceName string) (apitrace.Tracer, *TracerProvider, error) {
 		}
 	}
 
-	// Create TracerProvider options
 	opts := []trace.TracerProviderOption{
 		trace.WithResource(res),
 		trace.WithSampler(trace.ParentBased(trace.TraceIDRatioBased(samplingRate))),
 	}
 
-	// In development mode, use stdout exporter
-	if getEnv("ENVIRONMENT", "production") == "development" {
-		// For development, we just create a basic provider without Kafka
-		tp := trace.NewTracerProvider(opts...)
-		otel.SetTracerProvider(tp)
-		otel.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator(
-			propagation.TraceContext{},
-			propagation.Baggage{},
-		))
-		tr := tp.Tracer(serviceName)
-		return tr, &TracerProvider{tp}, nil
-	}
-
-	// Create Kafka exporter if enabled
-	if !cfg.EnableKafka {
-		os.Stderr.WriteString("Trace Kafka export disabled\n")
-	} else {
-		exporter, err := NewKafkaExporter(cfg)
-		if err != nil {
-			return nil, nil, err
+	// Set up the OTLP gRPC exporter using the library's own options.
+	// WithInsecure() is the otlptracegrpc-native flag for plaintext connections.
+	endpoint := getEnv("OTEL_EXPORTER_OTLP_ENDPOINT", "")
+	if endpoint != "" {
+		target := endpoint
+		if idx := strings.Index(endpoint, "://"); idx >= 0 {
+			target = endpoint[idx+3:]
 		}
 
-		if exporter != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		exporter, expErr := otlptracegrpc.New(ctx,
+			otlptracegrpc.WithEndpoint(target),
+			otlptracegrpc.WithInsecure(),
+		)
+		if expErr == nil {
 			opts = append(opts, trace.WithBatcher(exporter))
-		} else {
-			os.Stderr.WriteString("Warning: KAFKA_BROKERS not set, trace export disabled\n")
 		}
 	}
 
-	// Create TracerProvider
 	tp := trace.NewTracerProvider(opts...)
 
-	// Set global TracerProvider and propagator
 	otel.SetTracerProvider(tp)
 	otel.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator(
 		propagation.TraceContext{},

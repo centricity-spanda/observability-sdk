@@ -1,0 +1,53 @@
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  batch:
+    timeout: 5s
+    send_batch_size: 1000
+    send_batch_max_size: 2000
+  memory_limiter:
+    check_interval: 1s
+    limit_mib: 256
+    spike_limit_mib: 64
+  resource:
+    attributes:
+      - key: collector.name
+        value: otel-agent
+        action: insert
+
+exporters:
+  kafka/traces:
+    brokers:
+      - kafka:29092
+    topic: traces.application
+    encoding: otlp_proto
+  kafka/metrics:
+    brokers:
+      - kafka:29092
+    topic: metrics.application
+    encoding: otlp_proto
+
+extensions:
+  health_check:
+    endpoint: 0.0.0.0:13133
+  pprof:
+    endpoint: 0.0.0.0:1777
+
+service:
+  extensions: [health_check, pprof]
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, batch, resource]
+      exporters: [kafka/traces]
+    metrics:
+      receivers: [otlp]
+      processors: [memory_limiter, batch, resource]
+      exporters: [kafka/metrics]
+
