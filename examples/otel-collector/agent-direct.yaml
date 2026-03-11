@@ -1,0 +1,70 @@
+# OTel Collector Agent — Phase 1 (No Kafka)
+# Receives OTLP from apps, forwards to OTel Gateway.
+# Flow: App → [this] OTel Agent → OTel Gateway → Tempo/Mimir
+
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  # Memory limiter — prevents OOM
+  memory_limiter:
+    check_interval: 1s
+    limit_mib: 512
+    spike_limit_mib: 128
+
+  # Batch processor — efficiency
+  batch:
+    timeout: 5s
+    send_batch_size: 1000
+    send_batch_max_size: 2000
+
+  # Resource metadata
+  resource:
+    attributes:
+      - key: collector.name
+        value: otel-agent
+        action: insert
+
+exporters:
+  # Forward everything to OTel Gateway (NOT directly to Tempo/Mimir)
+  otlp/gateway:
+    endpoint: otel-gateway:4317
+    tls:
+      insecure: true
+
+  # Debug (development only)
+  debug:
+    verbosity: basic
+    sampling_initial: 5
+    sampling_thereafter: 200
+
+extensions:
+  health_check:
+    endpoint: 0.0.0.0:13133
+  pprof:
+    endpoint: 0.0.0.0:1777
+
+service:
+  extensions: [health_check, pprof]
+
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, batch, resource]
+      exporters: [otlp/gateway, debug]
+
+    metrics:
+      receivers: [otlp]
+      processors: [memory_limiter, batch, resource]
+      exporters: [otlp/gateway, debug]
+
+  telemetry:
+    logs:
+      level: info
+    metrics:
+      address: 0.0.0.0:8888

@@ -1,3 +1,7 @@
+# Vector Agent — Phase 2 (Kafka mode)
+# Reads logs from Kafka, applies transforms, sends to Loki.
+# The Vector Agent on each node pushes to Kafka; this aggregator consumes.
+
 data_dir: "/var/lib/vector"
 
 sources:
@@ -19,8 +23,6 @@ transforms:
     inputs:
       - "kafka_logs"
     source: |
-      # docker_logs sends the raw line in .message (e.g. "2026-02-25 16:39:57.372 | {\"timestamp\":...}").
-      # Extract the JSON part and replace the event with the parsed envelope so labels work.
       json_str = string(.message) ?? ""
       if contains(json_str, " | ") {
         parts = split(json_str, " | ", limit: 2)
@@ -30,7 +32,7 @@ transforms:
       if err == null && is_object(parsed) {
         . = parsed
       }
-      # Extract label values from the structured log envelope
+      # Extract label values
       if is_object(.service) {
         .label_service = string(.service."service.name") ?? "unknown"
         .label_environment = string(.service."deployment.environment") ?? "unknown"
@@ -40,11 +42,20 @@ transforms:
       }
       .label_severity = string(.severity) ?? string(.level) ?? "info"
 
+  # ── Rate Limiting (throttle per service) ──────────────────────────────────
+  throttle_logs:
+    type: "throttle"
+    inputs:
+      - "parse_logs"
+    threshold: 1000
+    window_secs: 1
+    key_field: "label_service"
+
 sinks:
   loki:
     type: "loki"
     inputs:
-      - "parse_logs"
+      - "throttle_logs"
     endpoint: "http://loki:3100"
     encoding:
       codec: "json"

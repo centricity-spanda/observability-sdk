@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   python-fastapi-service:
     container_name: python-fastapi-service
@@ -11,10 +9,42 @@ services:
     env_file:
       - .env
     environment:
-      # Reach the OTEL agent running in the infra stack (examples/docker-compose.yml)
-      # via the host's mapped port 4317.
-      OTEL_EXPORTER_OTLP_ENDPOINT: "http://host.docker.internal:4317"
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
+      OTEL_EXPORTER_OTLP_ENDPOINT: "http://otel-agent:4317"
+    networks:
+      - infra
     restart: unless-stopped
 
+  # ============ VECTOR AGENT (docker logs -> Kafka) ============
+  vector-agent:
+    image: timberio/vector:0.34.1-alpine
+    container_name: vector-agent
+    volumes:
+      - ./vector/vector-agent.yaml:/etc/vector/vector.yaml:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - vector-agent-data:/var/lib/vector
+    environment:
+      VECTOR_LOG: info
+    networks:
+      - infra
+
+  # ============ OTEL COLLECTOR AGENT (OTLP -> Kafka) ============
+  otel-agent:
+    image: otel/opentelemetry-collector-contrib:0.91.0
+    container_name: otel-agent
+    ports:
+      - "4317:4317"   # OTLP gRPC for SDKs
+      - "4318:4318"   # OTLP HTTP (optional)
+      - "13134:13133" # Separate health check port on host
+    volumes:
+      - ./otel-collector/agent-config.yaml:/etc/otelcol-contrib/config.yaml:ro
+    command: [ "--config=/etc/otelcol-contrib/config.yaml" ]
+    networks:
+      - infra
+
+volumes:
+  vector-agent-data:
+
+networks:
+  infra:
+    external: true
+    name: examples_default

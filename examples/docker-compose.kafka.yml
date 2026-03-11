@@ -1,0 +1,261 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# PHASE 2 — WITH KAFKA (Durable, Buffered Pipelines)
+# Apps → Vector Agent → Kafka → Vector Aggregator → Loki
+# Apps → OTel Agent → Kafka → OTel Gateway → Tempo/Mimir
+# Run: docker-compose -f docker-compose.kafka.yml up -d
+# ═══════════════════════════════════════════════════════════════════════════════
+version: '3.8'
+
+services:
+  # ═══ KAFKA TRANSPORT LAYER ═════════════════════════════════════════════════
+
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.5.0
+    container_name: zookeeper
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    ports:
+      - "2181:2181"
+    healthcheck:
+      test: ["CMD", "nc", "-z", "localhost", "2181"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  kafka:
+    image: confluentinc/cp-kafka:7.5.0
+    container_name: kafka
+    depends_on:
+      zookeeper:
+        condition: service_healthy
+    ports:
+      - "9092:9092"
+      - "29092:29092"
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+    healthcheck:
+      test: ["CMD", "kafka-topics", "--bootstrap-server", "localhost:9092", "--list"]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+
+  kafka-init:
+    image: confluentinc/cp-kafka:7.5.0
+    depends_on:
+      kafka:
+        condition: service_healthy
+    entrypoint: ["/bin/sh", "-c"]
+    command: |
+      "
+      kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists --topic logs.application --partitions 3 --replication-factor 1
+      kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists --topic traces.application --partitions 3 --replication-factor 1
+      kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists --topic metrics.application --partitions 3 --replication-factor 1
+      echo 'Kafka topics created!'
+      "
+
+  kafka-ui:
+    image: provectuslabs/kafka-ui:latest
+    container_name: kafka-ui
+    depends_on:
+      kafka:
+        condition: service_healthy
+    ports:
+      - "8080:8080"
+    environment:
+      KAFKA_CLUSTERS_0_NAME: local
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:29092
+
+  # ═══ STORAGE LAYER ═══════════════════════════════════════════════════════════
+
+  loki:
+    image: grafana/loki:3.0.0
+    container_name: loki
+    command: -config.file=/etc/loki/loki-config.yaml
+    volumes:
+      - ./loki/loki-config.yaml:/etc/loki/loki-config.yaml:ro
+      - loki-data:/loki
+    ports:
+      - "3100:3100"
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:3100/ready || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  tempo:
+    image: grafana/tempo:2.3.0
+    container_name: tempo
+    command: -config.file=/etc/tempo/tempo-config.yaml
+    volumes:
+      - ./tempo/tempo-config.yaml:/etc/tempo/tempo-config.yaml:ro
+      - tempo-data:/var/tempo
+    ports:
+      - "3200:3200"
+      - "4417:4317"
+      - "4418:4318"
+
+  mimir:
+    image: grafana/mimir:2.12.0
+    container_name: mimir
+    command: ["-config.file=/etc/mimir/mimir-config.yaml", "-target=all"]
+    volumes:
+      - ./mimir/mimir-config.yaml:/etc/mimir/mimir-config.yaml:ro
+      - mimir-data:/var/mimir
+    ports:
+      - "9009:9009"
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:9009/ready || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  # ═══ AGGREGATION LAYER ══════════════════════════════════════════════════════
+
+  # Vector Aggregator — consumes logs from Kafka, pushes to Loki
+  vector:
+    image: timberio/vector:0.34.1-alpine
+    container_name: vector-aggregator
+    depends_on:
+      kafka:
+        condition: service_healthy
+      loki:
+        condition: service_healthy
+    ports:
+      - "8686:8686"
+    volumes:
+      - ./vector/vector.yaml:/etc/vector/vector.yaml:ro
+      - vector-data:/var/lib/vector
+    environment:
+      VECTOR_LOG: info
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8686/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # OTel Gateway — consumes traces/metrics from Kafka, pushes to Tempo/Mimir
+  otel-gateway:
+    image: otel/opentelemetry-collector-contrib:0.91.0
+    container_name: otel-gateway
+    depends_on:
+      kafka:
+        condition: service_healthy
+      tempo:
+        condition: service_started
+      mimir:
+        condition: service_started
+    ports:
+      - "8888:8888"
+      - "13133:13133"
+    volumes:
+      - ./otel-collector/config.yaml:/etc/otelcol-contrib/config.yaml:ro
+    command: ["--config=/etc/otelcol-contrib/config.yaml"]
+
+  # ═══ VISUALIZATION ══════════════════════════════════════════════════════════
+
+  grafana:
+    image: grafana/grafana:10.4.0
+    container_name: grafana
+    depends_on:
+      loki:
+        condition: service_healthy
+      tempo:
+        condition: service_started
+      mimir:
+        condition: service_healthy
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_UNIFIED_ALERTING_ENABLED: "true"
+    volumes:
+      - ./grafana/provisioning/datasources:/etc/grafana/provisioning/datasources:ro
+      - ./grafana/provisioning/dashboards:/etc/grafana/provisioning/dashboards:ro
+      - ./grafana/provisioning/alerting:/etc/grafana/provisioning/alerting:ro
+      - grafana-data:/var/lib/grafana
+
+  # ═══ APPLICATION SERVICES ═══════════════════════════════════════════════════
+
+  go-service:
+    build:
+      context: ../
+      dockerfile: examples/go-http-service/Dockerfile
+    container_name: go-service
+    ports:
+      - "8088:8088"
+    environment:
+      SERVICE_NAME: go-service
+      SERVICE_VERSION: "1.0.0"
+      ENVIRONMENT: development
+      SERVICE_TEAM: platform
+      LOG_LEVEL: info
+      LOG_CONSOLE_ENABLED: "true"
+      LOG_KAFKA_ENABLED: "true"
+      KAFKA_BROKERS: kafka:29092
+      KAFKA_LOG_TOPIC: logs.application
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-gateway:4317
+      OTEL_EXPORTER_OTLP_PROTOCOL: grpc
+    depends_on:
+      kafka:
+        condition: service_healthy
+
+  python-service:
+    build:
+      context: ../
+      dockerfile: examples/python-fastapi-service/Dockerfile
+    container_name: python-service
+    ports:
+      - "8089:8081"
+    environment:
+      SERVICE_NAME: python-service
+      SERVICE_VERSION: "1.0.0"
+      ENVIRONMENT: development
+      SERVICE_TEAM: platform
+      LOG_LEVEL: info
+      LOG_CONSOLE_ENABLED: "true"
+      LOG_KAFKA_ENABLED: "true"
+      KAFKA_BROKERS: kafka:29092
+      KAFKA_LOG_TOPIC: logs.application
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-gateway:4317
+      OTEL_EXPORTER_OTLP_PROTOCOL: grpc
+      PORT: "8081"
+    depends_on:
+      kafka:
+        condition: service_healthy
+
+  dotnet-service:
+    build:
+      context: ../
+      dockerfile: examples/dotnet-service/Dockerfile
+    container_name: dotnet-service
+    ports:
+      - "8091:8091"
+    environment:
+      SERVICE_NAME: dotnet-service
+      SERVICE_VERSION: "1.0.0"
+      ENVIRONMENT: development
+      SERVICE_TEAM: platform
+      LOG_LEVEL: info
+      LOG_KAFKA_ENABLED: "true"
+      KAFKA_BROKERS: kafka:29092
+      KAFKA_LOG_TOPIC: logs.application
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-gateway:4317
+      ASPNETCORE_URLS: http://+:8091
+    depends_on:
+      kafka:
+        condition: service_healthy
+
+volumes:
+  vector-data:
+  loki-data:
+  tempo-data:
+  mimir-data:
+  grafana-data:

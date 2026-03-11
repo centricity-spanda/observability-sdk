@@ -7,8 +7,14 @@ import { getEnv, getEnvBool } from '../env';
 
 export interface LogConfig {
   serviceName: string;
-  environment: string;
   serviceVersion: string;
+  serviceNamespace: string;
+  environment: string;
+  team: string;
+  hostName: string;
+  k8sPodName: string;
+  k8sNamespaceName: string;
+  k8sNodeName: string;
   kafkaBrokers: string[];
   logTopic: string;
   logLevel: string;
@@ -30,12 +36,18 @@ export function newLogConfig(serviceName: string): LogConfig {
   const brokers = getEnv('KAFKA_BROKERS', '');
   return {
     serviceName,
-    environment: getEnv('ENVIRONMENT', 'production'),
     serviceVersion: getEnv('SERVICE_VERSION', 'unknown'),
+    serviceNamespace: getEnv('SERVICE_NAMESPACE', 'default'),
+    environment: getEnv('ENVIRONMENT', 'production'),
+    team: getEnv('SERVICE_TEAM', ''),
+    hostName: getEnv('HOST_NAME', process.env['HOSTNAME'] || ''),
+    k8sPodName: getEnv('K8S_POD_NAME', ''),
+    k8sNamespaceName: getEnv('K8S_NAMESPACE_NAME', ''),
+    k8sNodeName: getEnv('K8S_NODE_NAME', ''),
     kafkaBrokers: brokers ? brokers.split(',').map((b) => b.trim()) : [],
     logTopic: getEnv('KAFKA_LOG_TOPIC', 'logs.application'),
     logLevel: getEnv('LOG_LEVEL', 'info'),
-    logType: getEnv('LOG_TYPE', 'standard'),
+    logType: getEnv('LOG_TYPE', 'app'),
     bufferSize: 4096,
     enableKafka: getEnvBool('LOG_KAFKA_ENABLED', true),
     enableFile: getEnvBool('LOG_FILE_ENABLED', false),

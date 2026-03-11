@@ -1,0 +1,80 @@
+# OTel Gateway — Phase 1 (No Kafka)
+# Receives OTLP from OTel Agent(s), routes to Tempo (traces) and Mimir (metrics).
+# Flow: OTel Agent → [this] OTel Gateway → Tempo + Mimir
+
+receivers:
+  # Receive OTLP from OTel Agent(s)
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  # Batch processor for efficiency
+  batch:
+    timeout: 5s
+    send_batch_size: 1000
+    send_batch_max_size: 2000
+
+  # Memory limiter to prevent OOM
+  memory_limiter:
+    check_interval: 1s
+    limit_mib: 256
+    spike_limit_mib: 64
+
+  # Resource processor to add metadata
+  resource:
+    attributes:
+      - key: collector.name
+        value: otel-gateway
+        action: insert
+      - key: pipeline
+        value: otel
+        action: insert
+
+exporters:
+  # Traces → Tempo
+  otlp/tempo:
+    endpoint: tempo:4317
+    tls:
+      insecure: true
+
+  # Metrics → Mimir (Prometheus remote write)
+  prometheusremotewrite/mimir:
+    endpoint: http://mimir:9009/api/v1/push
+
+  # Debug exporter
+  debug:
+    verbosity: basic
+    sampling_initial: 5
+    sampling_thereafter: 200
+
+extensions:
+  health_check:
+    endpoint: 0.0.0.0:13133
+  pprof:
+    endpoint: 0.0.0.0:1777
+  zpages:
+    endpoint: 0.0.0.0:55679
+
+service:
+  extensions: [health_check, pprof, zpages]
+
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, batch, resource]
+      exporters: [otlp/tempo, debug]
+
+    metrics:
+      receivers: [otlp]
+      processors: [memory_limiter, batch, resource]
+      exporters: [prometheusremotewrite/mimir, debug]
+
+  telemetry:
+    logs:
+      level: info
+    metrics:
+      address: 0.0.0.0:8889

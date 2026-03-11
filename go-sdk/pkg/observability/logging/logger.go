@@ -1,11 +1,14 @@
 package logging
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"time"
 
+	"go.opentelemetry.io/otel/trace"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 )
@@ -146,6 +149,10 @@ func (c *EnvelopeCore) Write(entry zapcore.Entry, fields []zapcore.Field) error 
 		entry.Message = piiRedactor.Redact(entry.Message)
 	}
 
+	// Auto-inject OTel trace context (trace_id, span_id, parent_span_id, trace_flags).
+	// Caller-supplied values take precedence over auto-injected ones.
+	injectTraceContext(attrMap)
+
 	// Extract error block if present
 	errorBlock := make(map[string]interface{})
 	if errVal, ok := attrMap["error"]; ok {
@@ -222,6 +229,43 @@ func (c *EnvelopeCore) Write(entry zapcore.Entry, fields []zapcore.Field) error 
 func (c *EnvelopeCore) Sync() error {
 	return c.ws.Sync()
 }
+
+// injectTraceContext extracts trace_id, span_id, parent_span_id, and trace_flags
+// from the currently active OpenTelemetry span and injects them into attrMap.
+// Caller-supplied values (already in attrMap) take precedence.
+func injectTraceContext(attrMap map[string]interface{}) {
+	span := trace.SpanFromContext(context.TODO())
+	if span == nil {
+		return
+	}
+	sc := span.SpanContext()
+	if !sc.IsValid() {
+		return
+	}
+
+	if _, ok := attrMap["trace_id"]; !ok {
+		attrMap["trace_id"] = sc.TraceID().String()
+	}
+	if _, ok := attrMap["span_id"]; !ok {
+		attrMap["span_id"] = sc.SpanID().String()
+	}
+	if _, ok := attrMap["trace_flags"]; !ok {
+		attrMap["trace_flags"] = fmt.Sprintf("%02x", sc.TraceFlags())
+	}
+	// parent_span_id: the SDK wraps spans as sdktrace.ReadOnlySpan which exposes Parent()
+	if _, ok := attrMap["parent_span_id"]; !ok {
+		type parentReader interface {
+			Parent() trace.SpanContext
+		}
+		if pr, ok := span.(parentReader); ok {
+			if parentSC := pr.Parent(); parentSC.IsValid() {
+				attrMap["parent_span_id"] = parentSC.SpanID().String()
+			}
+		}
+	}
+}
+
+
 
 // fieldsToMap converts zap fields to a map[string]interface{}.
 func fieldsToMap(fields []zapcore.Field) map[string]interface{} {

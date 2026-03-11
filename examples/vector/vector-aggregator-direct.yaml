@@ -1,0 +1,61 @@
+# Vector Aggregator — Phase 1 (No Kafka)
+# Receives logs from Vector Agent(s) via Vector protocol,
+# applies enrichment and routing, pushes to Loki.
+#
+# Flow: Vector Agent → [this] Vector Aggregator → Loki
+
+data_dir: "/var/lib/vector"
+
+sources:
+  # Receive logs from Vector Agent(s) via Vector protocol
+  vector_agents:
+    type: "vector"
+    address: "0.0.0.0:6000"
+
+transforms:
+  enrich_logs:
+    type: "remap"
+    inputs:
+      - "vector_agents"
+    source: |
+      # Ensure label fields exist for Loki
+      if !exists(.label_service) {
+        if is_object(.service) {
+          .label_service = string(.service."service.name") ?? "unknown"
+          .label_environment = string(.service."deployment.environment") ?? "unknown"
+        } else {
+          .label_service = "unknown"
+          .label_environment = "unknown"
+        }
+      }
+      if !exists(.label_severity) {
+        .label_severity = string(.severity) ?? string(.level) ?? "info"
+      }
+
+  # ── Rate Limiting (second layer — throttle per service at aggregator) ─────
+  throttle_logs:
+    type: "throttle"
+    inputs:
+      - "enrich_logs"
+    threshold: 2000
+    window_secs: 1
+    key_field: "label_service"
+
+sinks:
+  loki:
+    type: "loki"
+    inputs:
+      - "throttle_logs"
+    endpoint: "http://loki:3100"
+    encoding:
+      codec: "json"
+    labels:
+      service: "{{ label_service }}"
+      severity: "{{ label_severity }}"
+      environment: "{{ label_environment }}"
+    remove_label_fields: true
+    out_of_order_action: "accept"
+
+api:
+  enabled: true
+  address: "0.0.0.0:8687"

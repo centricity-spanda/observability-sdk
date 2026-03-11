@@ -24,6 +24,11 @@ datasources:
     access: proxy
     url: http://tempo:3200
     jsonData:
+      httpMethod: GET
+      serviceMap:
+        datasourceUid: mimir
+      nodeGraph:
+        enabled: true
       tracesToLogsV2:
         datasourceUid: loki
         spanStartTimeShift: '-1h'

@@ -4,10 +4,11 @@ import logging
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Optional
 
 import structlog
 from structlog.types import Processor
+from opentelemetry import trace as otel_trace
 
 from observability.logging.config import LogConfig, new_config
 from observability.logging.pii_redactor import redact_log_event
@@ -36,6 +37,25 @@ def _file_processor(logger: Any, method_name: str, event_dict: dict) -> dict:
         _file_handler.stream.write(log_line + "\n")
         _file_handler.stream.flush()
     return event_dict
+
+
+def _get_otel_trace_context() -> Dict[str, str]:
+    """Extract trace_id, span_id, parent_span_id, and trace_flags from the active OTel span."""
+    ctx: Dict[str, str] = {}
+    try:
+        span = otel_trace.get_current_span()
+        sc = span.get_span_context()
+        if sc and sc.is_valid:
+            ctx["trace_id"] = format(sc.trace_id, "032x")
+            ctx["span_id"] = format(sc.span_id, "016x")
+            ctx["trace_flags"] = format(sc.trace_flags, "02x")
+            # parent_span_id: available via the SDK's NonRecordingSpan / Span interface
+            parent_sc = getattr(span, "_parent", None) or getattr(span, "parent", None)
+            if parent_sc is not None and hasattr(parent_sc, "span_id") and parent_sc.is_valid:
+                ctx["parent_span_id"] = format(parent_sc.span_id, "016x")
+    except Exception:
+        pass
+    return ctx
 
 
 def new_logger(service_name: str) -> structlog.BoundLogger:
@@ -85,14 +105,26 @@ def new_logger(service_name: str) -> structlog.BoundLogger:
             service_block["k8s.node.name"] = config.k8s_node_name
 
         # Extract error details if present
-        error_block = {}
+        error_block: Dict[str, Any] = {}
         if "exception" in event_dict:
             error_block = {"exception": event_dict.pop("exception")}
         elif "error" in event_dict and isinstance(event_dict["error"], dict):
             error_block = event_dict.pop("error")
 
-        # Remaining keys are treated as attributes
-        attributes = dict(event_dict)
+        # Remaining keys become the attributes dict
+        attributes: Dict[str, Any] = dict(event_dict)
+
+        # Inject OTel trace context (auto-injected; caller-supplied values take precedence)
+        trace_ctx = _get_otel_trace_context()
+        for key in ("trace_id", "span_id", "parent_span_id", "trace_flags"):
+            if key not in attributes and key in trace_ctx:
+                attributes[key] = trace_ctx[key]
+
+        # Inject standard attribute defaults
+        if "log.type" not in attributes:
+            attributes["log.type"] = config.log_type if config.log_type else "app"
+        if config.team and "team" not in attributes:
+            attributes["team"] = config.team
 
         return {
             "timestamp": timestamp,

@@ -1,0 +1,85 @@
+# Vector Agent — Phase 1 (No Kafka)
+# Reads Docker logs, applies PII masking + rate limiting,
+# pushes to Vector Aggregator via HTTP (not directly to Loki).
+#
+# Flow: App stdout → Vector Agent → Vector Aggregator → Loki
+
+data_dir: "/var/lib/vector"
+
+sources:
+  docker_logs:
+    type: "docker_logs"
+    include_containers:
+      - "go-service"
+      - "python-service"
+      - "node-service"
+      - "dotnet-service"
+
+transforms:
+  parse_json:
+    type: "remap"
+    inputs:
+      - "docker_logs"
+    source: |
+      # Try to parse JSON from the message field
+      json_str = string(.message) ?? ""
+      if contains(json_str, " | ") {
+        parts = split(json_str, " | ", limit: 2)
+        json_str = string(parts[1]) ?? json_str
+      }
+      parsed, err = parse_json(json_str)
+      if err == null && is_object(parsed) {
+        . = parsed
+      }
+      # Extract labels from the structured log envelope
+      if is_object(.service) {
+        .label_service = string(.service."service.name") ?? "unknown"
+        .label_environment = string(.service."deployment.environment") ?? "unknown"
+      } else {
+        .label_service = "unknown"
+        .label_environment = "unknown"
+      }
+      .label_severity = string(.severity) ?? string(.level) ?? "info"
+
+  # ── PII Masking (SEBI compliance) ─────────────────────────────────────────
+  pii_mask:
+    type: "remap"
+    inputs:
+      - "parse_json"
+    source: |
+      msg = string(.) ?? ""
+      # PAN number: AAAAA0000A
+      . = replace(., r'[A-Z]{5}[0-9]{4}[A-Z]', "[PAN_MASKED]")
+      # Aadhaar: 12-digit with optional spaces
+      . = replace(., r'[2-9]\d{3}\s?\d{4}\s?\d{4}', "[AADHAAR_MASKED]")
+      # Credit/debit card: 16-digit
+      . = replace(., r'\b\d{4}[\s-]?\d{4}[\s-]?\d{4}[\s-]?\d{4}\b', "[CARD_MASKED]")
+      # Phone: Indian mobile
+      . = replace(., r'\b[6-9]\d{9}\b', "[PHONE_MASKED]")
+      # Email
+      . = replace(., r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}', "[EMAIL_MASKED]")
+
+  # ── Rate Limiting (per-service throttle) ──────────────────────────────────
+  throttle_logs:
+    type: "throttle"
+    inputs:
+      - "pii_mask"
+    threshold: 1000
+    window_secs: 1
+    key_field: "label_service"
+
+sinks:
+  # Push to Vector Aggregator (NOT to Loki directly)
+  vector_aggregator:
+    type: "vector"
+    inputs:
+      - "throttle_logs"
+    address: "vector-aggregator:6000"
+    buffer:
+      type: "disk"
+      max_size: 536870912  # 512MB disk buffer for durability
+      when_full: "drop_newest"
+
+api:
+  enabled: true
+  address: "0.0.0.0:8686"

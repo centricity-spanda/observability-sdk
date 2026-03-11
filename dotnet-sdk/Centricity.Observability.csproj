@@ -1,0 +1,40 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>Centricity.Observability</AssemblyName>
+    <RootNamespace>Centricity.Observability</RootNamespace>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <PackageId>Centricity.Observability</PackageId>
+    <Version>1.0.0</Version>
+    <Description>Centricity Observability SDK — unified logs (Serilog), traces and metrics (OpenTelemetry + Prometheus) for .NET services.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Logging: Serilog -->
+    <PackageReference Include="Serilog"                            Version="4.0.2" />
+    <PackageReference Include="Serilog.Sinks.Console"             Version="6.0.0" />
+    <PackageReference Include="Serilog.Sinks.File"                Version="6.0.0" />
+    <PackageReference Include="Confluent.Kafka"                   Version="2.5.3" />
+
+    <!-- Tracing: OpenTelemetry -->
+    <PackageReference Include="OpenTelemetry"                                         Version="1.9.0" />
+    <PackageReference Include="OpenTelemetry.Exporter.OpenTelemetryProtocol"          Version="1.9.0" />
+    <PackageReference Include="OpenTelemetry.Extensions.Hosting"                      Version="1.9.0" />
+    <PackageReference Include="OpenTelemetry.Instrumentation.AspNetCore"              Version="1.9.0" />
+    <PackageReference Include="OpenTelemetry.Instrumentation.Http"                    Version="1.9.0" />
+
+    <!-- Metrics: OpenTelemetry + Prometheus -->
+    <PackageReference Include="OpenTelemetry.Exporter.Prometheus.AspNetCore"          Version="1.9.0-beta.2" />
+
+    <!-- System.Diagnostics.Activity is in-box since .NET 5 -->
+  </ItemGroup>
+
+  <!-- ASP.NET Core — needed for HTTP middleware (HttpMetricsMiddleware, HttpTracingMiddleware) -->
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+
+</Project>
